@@ -15,6 +15,30 @@ final class UpdatePromptIntegrationTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(SettingsBackupPayload.self, from: legacyData).showUpdatePopups)
     }
 
+    func testOnlyLaunchesRightAfterLoginCountAsSessionRestore() {
+        let login = Date(timeIntervalSinceReferenceDate: 1000)
+        func restored(_ offset: TimeInterval?) -> Bool {
+            LoginSessionLaunch.startedWithLoginSession(
+                processStart: offset.map(login.addingTimeInterval),
+                consoleLogin: login
+            )
+        }
+        XCTAssertTrue(restored(0))
+        XCTAssertTrue(restored(4), "macOS reopens apps seconds after login")
+        XCTAssertTrue(restored(LoginSessionLaunch.restoreWindow))
+        XCTAssertFalse(restored(LoginSessionLaunch.restoreWindow + 1), "opening the app later is a manual launch")
+        XCTAssertFalse(restored(3600))
+        XCTAssertFalse(restored(-1), "a start before the login record is not trusted")
+        XCTAssertFalse(restored(nil), "an unknown start time shows the window")
+        XCTAssertFalse(
+            LoginSessionLaunch.startedWithLoginSession(processStart: login, consoleLogin: nil),
+            "an unknown login time shows the window"
+        )
+        // Tests run long after login, so the live readings must resolve and must not match.
+        XCTAssertNotNil(LoginSessionLaunch.currentProcessStartDate())
+        XCTAssertNotNil(LoginSessionLaunch.consoleLoginDate())
+    }
+
     func testOnlyOlderCopiesAtTheSameLocationAreSuperseded() {
         typealias Instance = SupersededInstanceRetirement.Instance
         let launch = Date(timeIntervalSinceReferenceDate: 1000)

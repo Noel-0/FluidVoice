@@ -91,12 +91,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         #endif
         // Must be read during the launch callback - the current Apple Event identifies
         // login-item launches (used to optionally start silently, see issue #369).
-        self.wasLaunchedAsLoginItem = Self.detectLoginItemLaunch()
+        // macOS reopening the app after a restart is also a login launch, but has no such event.
+        let loginItemLaunch = Self.detectLoginItemLaunch()
+        let sessionRestoreLaunch = !loginItemLaunch && LoginSessionLaunch.currentProcessStartedWithLoginSession()
+        self.wasLaunchedAsLoginItem = loginItemLaunch || sessionRestoreLaunch
         if self.wasLaunchedAsLoginItem {
             self.analyticsActivationSuppressionDeadline = Date().addingTimeInterval(3)
         }
         DebugLogger.shared.info(
-            "Application launched [loginItemLaunch=\(self.wasLaunchedAsLoginItem)]",
+            "Application launched [loginItemLaunch=\(loginItemLaunch), sessionRestoreLaunch=\(sessionRestoreLaunch)]",
             source: "AppDelegate"
         )
         UNUserNotificationCenter.current().delegate = self
