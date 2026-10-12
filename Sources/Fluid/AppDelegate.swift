@@ -133,6 +133,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        self.applyMainWindowRestorability()
         if Self.restartPrepared { return .terminateNow }
         Task { @MainActor in
             await TranscriptionHistoryStore.shared.finishPendingWrites()
@@ -262,6 +263,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         return !self.bringMainWindowToFrontIfPresent()
     }
 
+    func applicationDidResignActive(_ notification: Notification) {
+        self.applyMainWindowRestorability()
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         DispatchQueue.global(qos: .utility).async {
             try? KeychainService.shared.refreshCachedKeys()
@@ -329,6 +334,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // invisibly instead of skipping it.
         let revealWindow = !self.wasLaunchedAsLoginItem || SettingsStore.shared.showMainWindowAtLoginLaunch
 
+        if !revealWindow {
+            self.bootMainWindowHiddenWhenCreated()
+        }
+
         for delay in [0.1, 0.6, 1.2, 2.5, 4.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
@@ -363,6 +372,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
+    /// The launch retries stop after four seconds, but a busy login can create the window later,
+    /// and visible. Hide it in the run-loop pass that creates it instead of at the next retry.
+    private func bootMainWindowHiddenWhenCreated() {
+        let observer = CFRunLoopObserverCreateWithHandler(
+            nil,
+            CFRunLoopActivity.beforeWaiting.rawValue,
+            true,
+            0
+        ) { [weak self] observer, _ in
+            guard let self, !self.didRevealMainWindowOnLaunch else {
+                CFRunLoopObserverInvalidate(observer)
+                return
+            }
+            if self.bootMainWindowHiddenIfPresent() {
+                self.didRevealMainWindowOnLaunch = true
+                CFRunLoopObserverInvalidate(observer)
+            }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+            CFRunLoopObserverInvalidate(observer)
+        }
+    }
+
     /// Realize the main window invisibly so ContentView's startup runs, then order it out.
     /// Used for login-item launches when "Show window when launched at login" is off.
     @discardableResult
@@ -372,6 +405,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let originalAlpha = mainWindow.alphaValue
         mainWindow.alphaValue = 0
         mainWindow.orderFrontRegardless()
+        self.applyMainWindowRestorability()
+        DebugLogger.shared.info("Main window concealed for silent login launch", source: "AppDelegate")
 
         // Give ContentView.onAppear time to finish its startup work (menu bar setup plus
         // the delayed service initialization), then put the window away. Alpha is restored
@@ -433,6 +468,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             }
             mainWindow.orderFrontRegardless()
             mainWindow.makeKeyAndOrderFront(nil)
+            self.applyMainWindowRestorability()
             DebugLogger.shared.debug("Brought main window to front", source: "AppDelegate")
             return true
         }
@@ -440,9 +476,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         return false
     }
 
-    private func isMainWindow(_ window: NSWindow) -> Bool {
+    /// macOS shows a saved picture of each restorable window as soon as the user logs back in,
+    /// before the app is running to hide it. Opt the main window out when it should stay hidden.
+    private func applyMainWindowRestorability() {
+        let restorable = SettingsStore.shared.showMainWindowAtLoginLaunch
+        for window in NSApp.windows where self.isMainWindow(window) && window.isRestorable != restorable {
+            window.isRestorable = restorable
+        }
+    }
+
+    func isMainWindow(_ window: NSWindow) -> Bool {
         guard window.level == .normal else { return false }
         guard window.styleMask.contains(.titled) else { return false }
+        // The title follows the selected page ("Stats", "General"), so it cannot identify the
+        // window alone. SwiftUI names windows of the "main" scene "main-AppWindow-N".
+        if window.identifier?.rawValue.hasPrefix("main-AppWindow") == true { return true }
         return window.title == "FluidVoice" || window.title.contains("FluidVoice")
     }
 

@@ -39,6 +39,24 @@ final class UpdatePromptIntegrationTests: XCTestCase {
         XCTAssertNotNil(LoginSessionLaunch.consoleLoginDate())
     }
 
+    func testMainWindowIsRecognizedWhateverPageTitleItShows() {
+        func window(title: String, identifier: String?, style: NSWindow.StyleMask = [.titled]) -> NSWindow {
+            let window = NSWindow(contentRect: .zero, styleMask: style, backing: .buffered, defer: true)
+            window.isReleasedWhenClosed = false
+            window.title = title
+            window.identifier = identifier.map { NSUserInterfaceItemIdentifier($0) }
+            return window
+        }
+        let delegate = AppDelegate()
+        XCTAssertTrue(delegate.isMainWindow(window(title: "Stats", identifier: "main-AppWindow-1")))
+        XCTAssertTrue(delegate.isMainWindow(window(title: "FluidVoice", identifier: nil)))
+        XCTAssertFalse(delegate.isMainWindow(window(title: "Stats", identifier: nil)), "another titled window is not the main window")
+        XCTAssertFalse(delegate.isMainWindow(window(title: "Stats", identifier: "main-AppWindow-1", style: [.borderless])))
+        let floating = window(title: "Stats", identifier: "main-AppWindow-1")
+        floating.level = .floating
+        XCTAssertFalse(delegate.isMainWindow(floating))
+    }
+
     func testOnlyOlderCopiesAtTheSameLocationAreSuperseded() {
         typealias Instance = SupersededInstanceRetirement.Instance
         let launch = Date(timeIntervalSinceReferenceDate: 1000)
