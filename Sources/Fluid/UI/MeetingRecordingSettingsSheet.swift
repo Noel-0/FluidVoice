@@ -466,14 +466,6 @@ struct MeetingRecordingSettingsSheet: View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.xl) {
             MeetingAgentIntegrations()
 
-            FluidManagementGroup(title: "Claude and ChatGPT apps") {
-                VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
-                    self.integrationRow(name: "Claude", provider: "by Anthropic", assetName: "Provider_Anthropic")
-                    Divider()
-                    self.integrationRow(name: "ChatGPT", provider: "by OpenAI", assetName: "Provider_OpenAI")
-                }
-            }
-
             Label(
                 "Coding agents are cloud tools: a meeting they read is sent to them. Nothing is shared until you add one, and it stops when you remove the skills.",
                 systemImage: "lock.fill"
@@ -482,36 +474,6 @@ struct MeetingRecordingSettingsSheet: View {
             .foregroundStyle(self.theme.palette.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    private func integrationRow(name: String, provider: String, assetName: String) -> some View {
-        HStack(spacing: self.theme.metrics.spacing.md) {
-            Image(assetName)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 26, height: 26)
-                .frame(width: 44, height: 44)
-                .background(Color(nsColor: .white), in: RoundedRectangle(cornerRadius: self.theme.metrics.corners.md))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: self.theme.metrics.spacing.xs) {
-                Text(name)
-                    .font(self.theme.typography.bodyStrong)
-                    .foregroundStyle(self.theme.palette.primaryText)
-                Text(provider)
-                    .font(self.theme.typography.caption)
-                    .foregroundStyle(self.theme.palette.secondaryText)
-            }
-            Spacer(minLength: self.theme.metrics.spacing.md)
-            Text("Coming soon")
-                .font(self.theme.typography.badge)
-                .foregroundStyle(self.theme.palette.secondaryText)
-            Toggle("Connect \(name) — coming soon", isOn: .constant(false))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .disabled(true)
-                .help("A connection to the \(name) app is coming soon.")
-        }
-        .padding(.vertical, self.theme.metrics.spacing.sm)
     }
 
     private var footer: some View {
