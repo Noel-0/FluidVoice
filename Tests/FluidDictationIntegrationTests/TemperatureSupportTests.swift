@@ -17,10 +17,10 @@ final class TemperatureSupportTests: XCTestCase {
     private var suiteName: String!
     private var emptySupport: ModelTemperatureSupport!
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
         self.suiteName = "TemperatureSupportTests.\(UUID().uuidString)"
-        self.emptySupport = ModelTemperatureSupport(defaults: UserDefaults(suiteName: self.suiteName)!)
+        self.emptySupport = try ModelTemperatureSupport(defaults: XCTUnwrap(UserDefaults(suiteName: self.suiteName)))
     }
 
     override func tearDown() {

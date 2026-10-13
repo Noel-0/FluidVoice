@@ -205,7 +205,7 @@ final nonisolated class LLMClient: @unchecked Sendable {
             let response = try await self.executeWithRetry(request: request, config: config)
             self.benchmark(config, "call_return")
             return response
-        } catch LLMError.httpError(400, let body) where config.temperature != nil && body.lowercased().contains("temperature") {
+        } catch let LLMError.httpError(400, body) where config.temperature != nil && body.lowercased().contains("temperature") {
             // Models keep dropping `temperature` (Opus 4.7+, Haiku 5.5, gpt-5...). The 400 arrives
             // before any streamed output, so retrying once without it cannot duplicate text.
             DebugLogger.shared.warning(

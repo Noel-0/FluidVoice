@@ -172,7 +172,7 @@ final class ModelTemperatureSupportTests: XCTestCase {
         do {
             _ = try await client.call(config)
             XCTFail("An unrelated 400 must surface to the caller")
-        } catch LLMError.httpError(let status, _) {
+        } catch let LLMError.httpError(status, _) {
             XCTAssertEqual(status, 400)
         } catch {
             XCTFail("Unexpected error: \(error)")
@@ -223,11 +223,11 @@ private final class TemperatureRejectingURLProtocol: URLProtocol {
         self.lock.withLock { self.recorded = [] }
     }
 
-    override class func canInit(with request: URLRequest) -> Bool {
+    override static func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "temperature-reject.test"
     }
 
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest {
         request
     }
 
@@ -259,12 +259,17 @@ private final class TemperatureRejectingURLProtocol: URLProtocol {
             contentType = "application/json"
         }
 
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: status,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": contentType]
-        )!
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                  url: url,
+                  statusCode: status,
+                  httpVersion: "HTTP/1.1",
+                  headerFields: ["Content-Type": contentType]
+              )
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(payload.utf8))
         client?.urlProtocolDidFinishLoading(self)
@@ -290,11 +295,11 @@ private final class TemperatureRejectingURLProtocol: URLProtocol {
 
 /// Serves a fixed OpenRouter-style `/models` listing.
 private final class ModelsListingURLProtocol: URLProtocol {
-    override class func canInit(with request: URLRequest) -> Bool {
+    override static func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "models-listing.test"
     }
 
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest {
         request
     }
 
@@ -305,7 +310,12 @@ private final class ModelsListingURLProtocol: URLProtocol {
           {"id": "anthropic/claude-haiku-5.5", "supported_parameters": ["tools"]}
         ]}
         """#
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+        guard let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(payload.utf8))
         client?.urlProtocolDidFinishLoading(self)
