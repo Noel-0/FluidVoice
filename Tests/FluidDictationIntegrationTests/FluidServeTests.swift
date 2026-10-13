@@ -230,7 +230,152 @@ final class FluidServeTests: XCTestCase {
         XCTAssertTrue(FluidServeSkillInstaller.starterPrompt.contains(FluidServeSkillInstaller.skillName))
     }
 
+    // MARK: - Settings feedback
+
+    func testPressingAddConfirmsOnlyOnceTheFileIsThereAndRemoveSaysRemoved() async throws {
+        try FileManager.default.createDirectory(at: self.home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+        let tool = URL(fileURLWithPath: "/Applications/FluidVoice.app/Contents/Helpers/fv-serve")
+        let model = FluidServeSettingsModel(home: self.home, toolURL: { tool }, selfCheck: { _ in .working(meetings: 3) })
+        let file = FluidServeSkillInstaller.skillFile(for: .claudeCode, home: self.home)
+
+        await model.refresh(accessEnabled: true)
+        XCTAssertEqual(model.statuses[.claudeCode], .notInstalled)
+        XCTAssertEqual(model.statuses[.codex], .agentNotFound)
+        XCTAssertEqual(model.check, .working(meetings: 3))
+        XCTAssertNil(model.notices[.claudeCode])
+
+        await model.install(.claudeCode, accessEnabled: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertEqual(model.statuses[.claudeCode], .installed)
+        XCTAssertEqual(model.notices[.claudeCode], .added)
+        XCTAssertNil(model.issue)
+        XCTAssertNil(model.notices[.codex], "Adding one tool's skill says nothing about the other")
+        let added = FluidServeSettingsSection.detail(for: .installed, notice: .added, agent: .claudeCode, folder: model.skillFolder(for: .claudeCode))
+        XCTAssertTrue(added.hasPrefix("Added just now at "))
+        XCTAssertTrue(added.contains("/.claude/skills/fluidmeet"))
+
+        await model.remove(.claudeCode, accessEnabled: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertEqual(model.statuses[.claudeCode], .notInstalled)
+        XCTAssertEqual(model.notices[.claudeCode], .removed)
+        let removed = FluidServeSettingsSection.detail(for: .notInstalled, notice: .removed, agent: .claudeCode, folder: model.skillFolder(for: .claudeCode))
+        XCTAssertTrue(removed.hasPrefix("Removed just now."))
+    }
+
+    func testAnAddThatCannotHappenIsReportedAndNotConfirmed() async throws {
+        let file = FluidServeSkillInstaller.skillFile(for: .codex, home: self.home)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let theirs = "---\nname: fluidmeet\ndescription: mine\n---\nHand written.\n"
+        try Data(theirs.utf8).write(to: file)
+        let model = FluidServeSettingsModel(home: self.home, toolURL: { URL(fileURLWithPath: "/x/fv-serve") }, selfCheck: { _ in .working(meetings: 0) })
+
+        await model.refresh(accessEnabled: true)
+        XCTAssertEqual(model.statuses[.codex], .foreign)
+        await model.install(.codex, accessEnabled: true)
+
+        XCTAssertEqual(model.statuses[.codex], .foreign)
+        XCTAssertNil(model.notices[.codex])
+        XCTAssertNotNil(model.issue)
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), theirs)
+    }
+
+    func testASkillFromAMovedAppIsReportedAsUpdatedNotAdded() async throws {
+        try FluidServeSkillInstaller.install(for: .claudeCode, toolPath: "/Old/FluidVoice.app/Contents/Helpers/fv-serve", home: self.home)
+        let model = FluidServeSettingsModel(home: self.home, toolURL: { URL(fileURLWithPath: "/New/FluidVoice.app/Contents/Helpers/fv-serve") }, selfCheck: { _ in .working(meetings: 1) })
+
+        await model.refresh(accessEnabled: true)
+        XCTAssertEqual(model.statuses[.claudeCode], .needsUpdate)
+        await model.install(.claudeCode, accessEnabled: true)
+
+        XCTAssertEqual(model.statuses[.claudeCode], .installed)
+        XCTAssertEqual(model.notices[.claudeCode], .updated)
+    }
+
+    func testTheCommandIsNotRunWhileAccessIsOff() async {
+        let calls = CallCounter()
+        let model = FluidServeSettingsModel(home: self.home, toolURL: { URL(fileURLWithPath: "/x/fv-serve") }, selfCheck: { _ in
+            calls.increment()
+            return .working(meetings: 9)
+        })
+
+        await model.refresh(accessEnabled: false)
+        XCTAssertNil(model.check)
+        XCTAssertEqual(calls.value, 0)
+
+        await model.refresh(accessEnabled: true)
+        XCTAssertEqual(model.check, .working(meetings: 9))
+        XCTAssertEqual(calls.value, 1, "One run per refresh; nothing polls")
+    }
+
+    func testEachStateHasItsOwnWordAndNeverReadsLikeAButton() {
+        let statuses: [FluidServeSkillInstaller.Status?] = [nil, .agentNotFound, .notInstalled, .installed, .needsUpdate, .foreign]
+        let titles = statuses.map { FluidServeSettingsSection.state(for: $0).title }
+        XCTAssertEqual(Set(titles).count, titles.count)
+        XCTAssertEqual(FluidServeSettingsSection.state(for: .installed).title, "Skill added")
+        XCTAssertEqual(FluidServeSettingsSection.state(for: .notInstalled).title, "Not added")
+        for title in titles {
+            XCTAssertFalse(title.hasPrefix("Remove"), title)
+            XCTAssertFalse(title.hasPrefix("Add "), title)
+        }
+    }
+
+    func testStatusAnswersInAFormTheAppCanRead() throws {
+        try self.save(self.session(title: "Weekly sync"))
+        let on = FluidServeCommand.run(arguments: ["status", "--json"], root: self.root, accessEnabled: true)
+        XCTAssertEqual(on.exitCode, 0)
+        XCTAssertEqual(FluidServeSelfCheck.outcome(fromStatusJSON: Data(on.output.utf8)), .working(meetings: 1))
+        let off = FluidServeCommand.run(arguments: ["status", "--json"], root: self.root, accessEnabled: false)
+        XCTAssertEqual(FluidServeSelfCheck.outcome(fromStatusJSON: Data(off.output.utf8)), .accessOff)
+        XCTAssertFalse(off.output.contains("Weekly sync"))
+        guard case .failed = FluidServeSelfCheck.outcome(fromStatusJSON: Data("not json".utf8)) else {
+            return XCTFail("An unreadable answer must not count as working")
+        }
+    }
+
+    /// End to end: the real `fv-serve` inside this app is started as its own process and must obey
+    /// the same switch the settings page writes.
+    func testTheBundledCommandReallyRunsAndObeysTheSwitch() throws {
+        let tool = try XCTUnwrap(FluidServeSkillInstaller.bundledToolURL(), "The app under test must contain fv-serve in Contents/Helpers")
+        let key = FluidServeMeetings.accessDefaultsKey
+        let before = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let before { UserDefaults.standard.set(before, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
+            CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+        }
+
+        UserDefaults.standard.set(false, forKey: key)
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+        XCTAssertEqual(FluidServeSelfCheck.run(tool: tool), .accessOff)
+
+        UserDefaults.standard.set(true, forKey: key)
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+        guard case .working = FluidServeSelfCheck.run(tool: tool) else {
+            return XCTFail("With the switch on, the bundled command must answer: \(FluidServeSelfCheck.run(tool: tool))")
+        }
+
+        guard case .failed = FluidServeSelfCheck.run(tool: URL(fileURLWithPath: "/nonexistent/fv-serve")) else {
+            return XCTFail("A missing command must be reported as a failure")
+        }
+    }
+
     // MARK: - Fixtures
+
+    private final class CallCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        var value: Int {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return self.count
+        }
+
+        func increment() {
+            self.lock.lock()
+            self.count += 1
+            self.lock.unlock()
+        }
+    }
 
     private func run(_ arguments: String...) -> FluidServeCommand.Result {
         FluidServeCommand.run(

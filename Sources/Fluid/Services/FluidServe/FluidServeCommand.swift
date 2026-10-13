@@ -19,7 +19,7 @@ nonisolated enum FluidServeCommand {
       fv-serve meet show <id|latest> [--from MM:SS] [--to MM:SS] [--json]
       fv-serve meet summary <id|latest> [--style NAME]
       fv-serve meet search "text" [--since 7d|24h|YYYY-MM-DD] [--limit N]
-      fv-serve status
+      fv-serve status [--json]
 
     An id is the first column of `meet list`; its first characters are enough.
     """
@@ -40,6 +40,10 @@ nonisolated enum FluidServeCommand {
             return Result(output: self.usage, exitCode: 0)
         case "status":
             let count = accessEnabled ? FluidServeMeetings.entries(root: root, fileManager: fileManager).count : 0
+            if arguments == ["--json"] {
+                let object: [String: Any] = ["access": accessEnabled, "meetings": count]
+                return Result(output: (try? self.json(object)) ?? "{}", exitCode: 0)
+            }
             return Result(
                 output: accessEnabled
                     ? "Meeting access: on\nMeetings available: \(count)"
