@@ -20,6 +20,7 @@ nonisolated enum FluidServeCommand {
       fv-serve meet summary <id|latest> [--style NAME]
       fv-serve meet search [--since 7d|24h|YYYY-MM-DD] [--limit N] [--] text
       fv-serve status [--json]
+      fv-serve skill          (prints the skill file for a coding agent)
 
     An id is the first column of `meet list`; its first characters are enough.
     """
@@ -28,6 +29,7 @@ nonisolated enum FluidServeCommand {
         arguments: [String],
         root: URL,
         accessEnabled: Bool,
+        toolPath: String = FluidServeMeetings.toolName,
         now: Date = Date(),
         timeZone: TimeZone = .current,
         fileManager: FileManager = .default
@@ -38,6 +40,9 @@ nonisolated enum FluidServeCommand {
         switch area {
         case "help", "--help", "-h":
             return Result(output: self.usage, exitCode: 0)
+        case "skill":
+            // Instructions only, no meeting data, so it answers whatever the switch says.
+            return Result(output: FluidServeSkill.document(toolPath: toolPath).trimmingCharacters(in: .newlines), exitCode: 0)
         case "status":
             let count = accessEnabled ? FluidServeMeetings.entries(root: root, fileManager: fileManager).count : 0
             if arguments == ["--json"] {

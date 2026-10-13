@@ -26,21 +26,41 @@ final class FluidServeSettingsModel: ObservableObject {
     @Published private(set) var check: FluidServeSelfCheck.Outcome?
     @Published private(set) var isChecking = false
     @Published private(set) var issue: String?
+    /// True once the instructions for another agent are on the clipboard, so the row can say so.
+    @Published private(set) var copiedAgentInstructions = false
 
     private let home: URL
     private let toolURL: () -> URL?
     private let selfCheck: @Sendable (URL) -> FluidServeSelfCheck.Outcome
+    private let copyToClipboard: (String) -> Bool
     /// Counts refreshes so a slow one that finishes late cannot overwrite a newer answer.
     private var refreshGeneration = 0
 
     init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         toolURL: @escaping () -> URL? = { FluidServeSkillInstaller.bundledToolURL() },
-        selfCheck: @escaping @Sendable (URL) -> FluidServeSelfCheck.Outcome = { FluidServeSelfCheck.run(tool: $0) }
+        selfCheck: @escaping @Sendable (URL) -> FluidServeSelfCheck.Outcome = { FluidServeSelfCheck.run(tool: $0) },
+        copyToClipboard: @escaping (String) -> Bool = { text in
+            NSPasteboard.general.clearContents()
+            return NSPasteboard.general.setString(text, forType: .string)
+        }
     ) {
         self.home = home
         self.toolURL = toolURL
         self.selfCheck = selfCheck
+        self.copyToClipboard = copyToClipboard
+    }
+
+    /// Puts a short message on the clipboard for any coding agent the page has no row for.
+    /// It says "copied" only when the clipboard really took the text.
+    func copyAgentInstructions() {
+        guard let tool = self.toolURL() else {
+            self.copiedAgentInstructions = false
+            self.issue = FluidServeSkillInstaller.InstallError.toolMissing.localizedDescription
+            return
+        }
+        self.copiedAgentInstructions = self.copyToClipboard(FluidServeSkill.agentInstructions(toolPath: tool.path))
+        self.issue = self.copiedAgentInstructions ? nil : "Could not copy to the clipboard."
     }
 
     func skillFolder(for agent: Agent) -> URL {
@@ -196,6 +216,7 @@ struct FluidServeSettingsSection: View {
                     ForEach(FluidServeSkillInstaller.Agent.allCases) { agent in
                         self.row(for: agent)
                     }
+                    self.otherAgentsRow
                 } else {
                     self.statusLabel(FluidServeSkillInstaller.InstallError.toolMissing.localizedDescription, symbol: "exclamationmark.circle.fill", color: .orange)
                 }
@@ -280,6 +301,34 @@ struct FluidServeSettingsSection: View {
                         .font(self.theme.typography.bodySmall)
                 }
             }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// For Cursor, Gemini and the rest: one message to paste, and the agent adds the skill itself.
+    private var otherAgentsRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Text("Other agents")
+                    .font(self.theme.typography.body)
+                    .foregroundStyle(Color(nsColor: .labelColor))
+                if self.model.copiedAgentInstructions {
+                    Label("Copied", systemImage: "checkmark.circle.fill")
+                        .font(self.theme.typography.bodySmall.weight(.semibold))
+                        .foregroundStyle(Color.fluidGreen)
+                }
+                Spacer(minLength: 0)
+                Button("Copy instructions") { self.model.copyAgentInstructions() }
+                    .fluidGlassAction()
+            }
+            Text(
+                self.model.copiedAgentInstructions
+                    ? "Copied just now. Paste it into your coding agent and it will add the \(FluidServeSkillInstaller.skillName) skill itself."
+                    : "Copies a short message for Cursor, Gemini or any other coding agent. Paste it in and the agent adds the skill itself."
+            )
+            .font(self.theme.typography.bodySmall)
+            .foregroundStyle(self.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .contain)
     }
