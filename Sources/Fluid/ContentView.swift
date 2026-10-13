@@ -3378,13 +3378,14 @@ struct ContentView: View {
 
         // A sidebar search field that was already focused when recording began gets
         // the text through its field editor, which also fires change notifications.
+        // So does an in-app editor that opted in with `DictationTextTarget`.
         if isFluidFrontmost, shouldDeliverOutputs, !sendsExistingDraft,
            let focusTarget = self.recordingFocusTarget,
            focusTarget.pid == ProcessInfo.processInfo.processIdentifier,
            TypingService.isExactFocusTargetActive(focusTarget),
            let window = NSApp.keyWindow,
            let editor = window.firstResponder as? NSTextView,
-           SidebarSearchField.owns(editor, in: window)
+           SidebarSearchField.owns(editor, in: window) || DictationTextTarget.accepts(editor)
         {
             editor.insertText(finalText, replacementRange: editor.selectedRange())
         }
