@@ -1687,6 +1687,22 @@ final class MeetingAutoDetectorTests: XCTestCase {
         XCTAssertNil(MeetingAppRegistry.pickerRank(forBundleIdentifier: "com.apple.Music"))
     }
 
+    func testBrowserMeetingsAreDetectedUntilTheUserTurnsThatOff() {
+        let key = "MeetingAutoDetectBrowserEnabled"
+        let defaults = UserDefaults.standard
+        let earlier = defaults.object(forKey: key)
+        defer {
+            if let earlier { defaults.set(earlier, forKey: key) } else { defaults.removeObject(forKey: key) }
+        }
+
+        defaults.removeObject(forKey: key)
+        XCTAssertTrue(SettingsStore.shared.meetingAutoDetectBrowserEnabled, "never chosen means on")
+        SettingsStore.shared.meetingAutoDetectBrowserEnabled = false
+        XCTAssertFalse(SettingsStore.shared.meetingAutoDetectBrowserEnabled, "a stored off stays off")
+        SettingsStore.shared.meetingAutoDetectBrowserEnabled = true
+        XCTAssertTrue(SettingsStore.shared.meetingAutoDetectBrowserEnabled)
+    }
+
     func testRegistryTierLookup() {
         XCTAssertEqual(MeetingAppRegistry.tier(forBundleIdentifier: "us.zoom.xos"), .nativeTier1)
         XCTAssertEqual(MeetingAppRegistry.tier(forBundleIdentifier: "com.google.Chrome"), .browserTier2)

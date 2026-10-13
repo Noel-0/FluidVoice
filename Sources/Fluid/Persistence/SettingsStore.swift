@@ -2126,9 +2126,14 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    /// Tier 2 browser-tab meeting auto-detection (default: OFF — reads the frontmost tab's URL).
+    /// Tier 2 browser-tab meeting auto-detection. On unless the user turned it off: Google Meet
+    /// only exists in a browser. It reads the frontmost tab's URL, which is never stored or sent.
     var meetingAutoDetectBrowserEnabled: Bool {
-        get { self.defaults.bool(forKey: Keys.meetingAutoDetectBrowserEnabled) }
+        get {
+            let value = self.defaults.object(forKey: Keys.meetingAutoDetectBrowserEnabled)
+            if value == nil { return true }
+            return self.defaults.bool(forKey: Keys.meetingAutoDetectBrowserEnabled)
+        }
         set {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.meetingAutoDetectBrowserEnabled)
