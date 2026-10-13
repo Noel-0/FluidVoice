@@ -413,22 +413,29 @@ final class MeetingAutoDetector {
             snapshot: snapshot,
             owning: MeetingAppRegistry.isBrowserApp(bundleIdentifier:)
         )
+        var inUse: Bool?
         if let inputByPID {
-            watched.browserMicUnknown = false
+            func holdsMicrophone(_ bundleIdentifier: String, _ pid: Int32) -> Bool? {
+                Self.browserHoldsMicrophone(bundleIdentifier: bundleIdentifier, pid: pid, owners: snapshot.owners, inputByPID: inputByPID)
+            }
             if !self.isStillRunning(watched) {
                 // The microphone alone could be a voice recorder page. It has to be on a meeting tab.
                 self.follow(&watched, to: self.records.values.filter {
                     $0.bundleIdentifier == watched.bundleIdentifier && $0.tier == .browserTier2
-                        && $0.hasLiveWindow && inputByPID[$0.pid] == true
+                        && $0.hasLiveWindow && holdsMicrophone($0.bundleIdentifier, $0.pid) == true
                 })
             }
-            if self.microphoneOwnerPID(for: watched, in: snapshot).flatMap({ inputByPID[$0] }) == true {
-                watched.sawProcessAudio = true
-                watched.browserMicReleasedAt = nil
-            } else if watched.sawProcessAudio, watched.browserMicReleasedAt == nil {
-                watched.browserMicReleasedAt = now
-            }
-        } else {
+            inUse = holdsMicrophone(watched.bundleIdentifier, watched.pid)
+        }
+        switch inUse {
+        case true?:
+            watched.browserMicUnknown = false
+            watched.sawProcessAudio = true
+            watched.browserMicReleasedAt = nil
+        case false?:
+            watched.browserMicUnknown = false
+            if watched.sawProcessAudio, watched.browserMicReleasedAt == nil { watched.browserMicReleasedAt = now }
+        case nil:
             // Not readable is not a release. The quiet has to be seen again from the start.
             watched.browserMicUnknown = true
             watched.browserMicReleasedAt = nil
@@ -436,12 +443,19 @@ final class MeetingAutoDetector {
         self.watchedRecording = watched
     }
 
-    /// Where the watched browser's microphone shows up: its own process, or for a web app the
-    /// browser it runs in.
-    private func microphoneOwnerPID(for watched: WatchedRecording, in snapshot: AudioProcessActivitySnapshot) -> Int32? {
-        guard let browser = MeetingAppRegistry.parentBrowser(ofWebApp: watched.bundleIdentifier) else { return watched.pid }
-        let browsers = snapshot.owners.filter { $0.bundleIdentifier == browser }
-        return browsers.count == 1 ? browsers.first?.processID : nil
+    /// Whether a browser holds the microphone, or nil when that cannot be told. A web app records
+    /// through the browser it runs in, and with two copies of that browser open there is no
+    /// telling which one it is.
+    private static func browserHoldsMicrophone(
+        bundleIdentifier: String,
+        pid: Int32,
+        owners: [MeetingProcessOwner],
+        inputByPID: [Int32: Bool]
+    ) -> Bool? {
+        guard let browser = MeetingAppRegistry.parentBrowser(ofWebApp: bundleIdentifier) else { return inputByPID[pid] == true }
+        let browsers = owners.filter { $0.bundleIdentifier == browser }
+        guard browsers.count == 1, let owner = browsers.first else { return nil }
+        return inputByPID[owner.processID] == true
     }
 
     private func isStillRunning(_ watched: WatchedRecording) -> Bool {

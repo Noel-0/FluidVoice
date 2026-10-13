@@ -1765,6 +1765,64 @@ final class MeetingAutoDetectorTests: XCTestCase {
         XCTAssertEqual(h.withdrawals, 1)
     }
 
+    /// Starts a recording of Google Meet's web app (pid 20), which records through Chrome (pid 8).
+    private func meetWebAppRecording(_ h: DetectorHarness, pid: Int32 = 20) throws {
+        let webApp = "com.google.Chrome.app.kjgfgldnnfoeklkmfkjfagphfepbbdan"
+        h.workspace.frontmostProcessID = pid
+        h.detector.handleBackfill([.init(kind: .launched, bundleIdentifier: webApp, processID: pid)])
+        h.detector.handleBrowserTabURL(.init(host: "meet.google.com", path: "/abc-defg-hij"), pid: pid, bundleIdentifier: webApp, at: h.clock.now())
+        h.detector.handleMicEdge(.init(isActive: true), at: h.clock.now())
+        XCTAssertTrue(try h.detector.startTapped(episodeID: XCTUnwrap(h.prompts.last?.episodeID)))
+    }
+
+    func testTwoCopiesOfTheBrowserLeaveAWebAppsMicrophoneUnknownNotReleased() async throws {
+        let h = DetectorHarness()
+        try self.meetWebAppRecording(h)
+        await h.pollChrome(microphoneInUse: true, pid: 8)
+
+        // A second Chrome from another folder opens. Which one the web app runs in can no longer be told.
+        let stable = MeetingProcessOwner(processID: 8, bundleIdentifier: "com.google.Chrome", bundlePath: "/Applications/Google Chrome.app")
+        let other = MeetingProcessOwner(processID: 18, bundleIdentifier: "com.google.Chrome", bundlePath: "/Users/me/Apps/Google Chrome.app")
+        let helper = AudioProcessDescriptor(
+            processID: 4242,
+            bundleIdentifier: nil,
+            executablePath: "/Applications/Google Chrome.app/Contents/Frameworks/Helpers/Google Chrome Helper",
+            isInputRunning: true,
+            isOutputRunning: true
+        )
+        h.audioProcessActivity.snapshotOverride = AudioProcessActivitySnapshot(processes: [helper], owners: [stable, other], queryState: .valid)
+        for _ in 0..<5 {
+            h.advance(30)
+            await h.detector.pollAudioProcessActivity(at: h.clock.now())
+            h.detector.tick(at: h.clock.now())
+        }
+        XCTAssertEqual(h.nudges, 0, "the call is still on")
+    }
+
+    func testARelaunchedMeetWebAppIsFollowedThroughItsBrowser() async throws {
+        let h = DetectorHarness()
+        let webApp = "com.google.Chrome.app.kjgfgldnnfoeklkmfkjfagphfepbbdan"
+        try self.meetWebAppRecording(h)
+        await h.pollChrome(microphoneInUse: true, pid: 8)
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: webApp, processID: 20), at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        await h.pollChrome(microphoneInUse: false, pid: 8)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        // The web app is opened again, on the meeting, and Chrome has the microphone.
+        h.detector.handleWorkspaceEvent(.init(kind: .launched, bundleIdentifier: webApp, processID: 21), at: h.clock.now())
+        await h.pollChrome(microphoneInUse: true, pid: 8)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0, "open again, but not on a meeting yet")
+
+        h.detector.handleBrowserTabURL(.init(host: "meet.google.com", path: "/abc-defg-hij"), pid: 21, bundleIdentifier: webApp, at: h.clock.now())
+        await h.pollChrome(microphoneInUse: true, pid: 8)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 1)
+    }
+
     func testNothingIsAskedOnceOurRecordingHasStopped() throws {
         let h = DetectorHarness()
         let episodeID = try XCTUnwrap(h.confirmZoom())
