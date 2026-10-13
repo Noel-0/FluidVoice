@@ -12,7 +12,10 @@ nonisolated struct MeetingSummarySelection: Codable, Equatable {
 nonisolated enum MeetingSummaryOnDevice {
     /// Reserved: no ModelRepository provider uses this ID.
     static let providerID = "on-device"
-    static let providerName = "On this Mac"
+    /// Shown beside the model and on saved summaries, for example "On device - Fluid Intelligence".
+    static var providerName: String {
+        "On device - \(PrivateAIProviderFeature.shared.providerName)"
+    }
     /// The on-device model reads the whole transcript in one request.
     static let maximumTranscriptBytes = 96_000
 }
