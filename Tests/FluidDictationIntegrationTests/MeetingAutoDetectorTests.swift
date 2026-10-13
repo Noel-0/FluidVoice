@@ -143,6 +143,15 @@ private final class DetectorHarness {
         self.detector.handleMicEdge(.init(isActive: true), at: self.clock.now())
         return self.prompts.last?.episodeID
     }
+
+    /// Teams keeps a window open all day, so only its audio says whether a call is on.
+    @discardableResult
+    func confirmTeams(pid: Int32 = 300) -> UUID? {
+        self.detector.handleWorkspaceEvent(.init(kind: .activated, bundleIdentifier: "com.microsoft.teams2", processID: pid), at: self.clock.now())
+        self.detector.handleWindowSnapshot([.init(processID: pid, windowID: 950, title: nil, layer: 0)], at: self.clock.now())
+        self.detector.handleMicEdge(.init(isActive: true), at: self.clock.now())
+        return self.prompts.last?.episodeID
+    }
 }
 
 @MainActor
@@ -1201,6 +1210,128 @@ final class MeetingAutoDetectorTests: XCTestCase {
 
         h.detector.tick(at: h.clock.now())
         XCTAssertEqual(h.nudges, 1, "the nudge fires once per session")
+    }
+
+    func testTeamsAsksOnceItsAudioStopsEvenThoughItsWindowStaysOpen() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmTeams())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.advance(600)
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0, "a call that is still using audio is not over")
+
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds - 2)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0, "a short gap in the app's audio is not the end of the call")
+
+        h.advance(4)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        h.advance(120)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1, "the episode retiring must not ask a second time")
+    }
+
+    func testAudioThatComesBackBeforeTheGraceEndsNeverAsks() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmTeams())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+        h.advance(10)
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.advance(60)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0)
+    }
+
+    func testAnAppWhoseAudioWasNeverSeenRunningDoesNotAskWhenItReadsAsIdle() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmTeams())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+
+        // The per-app audio query never showed this app running, so "not running" tells us nothing.
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+        h.advance(300)
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0)
+    }
+
+    func testAnUnreadableAudioQueryIsNotTakenAsTheCallEnding() async throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmTeams())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+
+        h.audioProcessActivity.snapshotOverride = AudioProcessActivitySnapshot(processes: [], owners: [], queryState: .unknown)
+        await h.detector.pollAudioProcessActivity(at: h.clock.now())
+        h.advance(120)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0)
+    }
+
+    func testQuittingTheMeetingAppAsksAfterTheGrace() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmZoom())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: "us.zoom.xos", processID: 100), at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0)
+
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        // Another app that happens to get the same process ID is not our meeting coming back.
+        h.detector.handleWorkspaceEvent(.init(kind: .launched, bundleIdentifier: "com.microsoft.teams2", processID: 100), at: h.clock.now())
+        h.advance(60)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+    }
+
+    func testNothingIsAskedOnceOurRecordingHasStopped() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmZoom())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+
+        // The user stopped our recording mid-call. The call ending later is no longer our business.
+        h.detector.recordingStopped()
+        h.detector.handleWindowSnapshot([], at: h.clock.now())
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: "us.zoom.xos", processID: 100), at: h.clock.now())
+        h.advance(120)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0)
+    }
+
+    func testAMeetingNobodyRecordedNeverAsks() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmZoom())
+        h.detector.timeoutDismissed(episodeID: episodeID)
+
+        h.detector.handleWindowSnapshot([], at: h.clock.now())
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: "us.zoom.xos", processID: 100), at: h.clock.now())
+        h.advance(120)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0)
+    }
+
+    func testScreenLockStopsTheWatchInsteadOfReadingItAsTheAppQuitting() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmZoom())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+
+        h.detector.disarmAndClearTransientState()
+        h.advance(120)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0)
     }
 
     // MARK: - Registry / URL matcher sanity

@@ -134,10 +134,15 @@ final class AppServices: ObservableObject {
         self.setupMeetingCoordinatorForwarding()
         // The auto-detected episode itself stays consumed until the meeting's own evidence ends
         // (window/URL gone ≥60s) — not merely because our recording stopped — so only the nudge
-        // needs to be dismissed here.
+        // and the end-of-meeting watch are dropped here.
         coordinator.$state
             .receive(on: DispatchQueue.main)
-            .sink { state in
+            .sink { [weak self, weak coordinator] state in
+                // Deliveries are queued, so read the state as it is now before calling a recording over.
+                switch coordinator?.state {
+                case .preparing, .recording, .recordingDegraded: break
+                default: self?._meetingAutoDetector?.recordingStopped()
+                }
                 guard !MeetingOverlayVisibility.isVisible(for: state) else { return }
                 MeetingStillRecordingNudgeController.shared.hide()
             }

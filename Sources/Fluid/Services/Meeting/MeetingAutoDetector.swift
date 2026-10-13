@@ -15,6 +15,9 @@ final class MeetingAutoDetector {
     static let frontmostLeadSeconds: TimeInterval = 15
     static let windowLossGraceSeconds: TimeInterval = 5
     static let micReleaseEpisodeEndSeconds: TimeInterval = 60
+    /// How long the meeting app must have let go of its audio, or been gone, before we ask whether
+    /// the meeting ended. Short blips (a device switch, a crash and relaunch) stay under it.
+    static let endSignalGraceSeconds: TimeInterval = 20
     static let dismissalSuppressionSeconds: TimeInterval = 30 * 60
     static let rollingDismissalWindowSeconds: TimeInterval = 14 * 24 * 3600
     static let dismissalCountThreshold = 3
@@ -95,8 +98,18 @@ final class MeetingAutoDetector {
         var windowID: UInt32?
         var confirmedAt: Date
         var consumed = false
-        var stillRecordingNudgeShown = false
         var duplicateEpisodeRejectionLogged = false
+    }
+
+    /// The meeting app behind our own live recording. Kept apart from the episode, which is
+    /// retired by rules written for the next start prompt and can go while we still record.
+    private struct WatchedRecording {
+        var pid: Int32
+        var incarnation: UInt64?
+        /// The app's own audio was seen running during this recording, so seeing it stop means something.
+        var sawProcessAudio = false
+        var appGoneAt: Date?
+        var asked = false
     }
 
     private let workspaceEvents: any WorkspaceEventsProviding
@@ -121,6 +134,7 @@ final class MeetingAutoDetector {
     }
 
     private var activeConsumedEpisodeKey: String?
+    private var watchedRecording: WatchedRecording?
     private var dismissedBundleUntil: [String: Date] = [:]
     private var dismissalTimestamps: [Date] = []
     private var pollTask: Task<Void, Never>?
@@ -638,6 +652,17 @@ final class MeetingAutoDetector {
         self.episodesByKey[key] = episode
         self.activeConsumedEpisodeKey = key
         self.dismissalTimestamps.removeAll()
+        let record = self.records[episode.pid]
+        self.watchedRecording = WatchedRecording(
+            pid: episode.pid,
+            incarnation: record?.incarnation,
+            sawProcessAudio: record?.processAudioWasActive == true
+        )
+    }
+
+    /// Our recording is over, however it ended. Nothing is left to ask about.
+    func recordingStopped() {
+        self.watchedRecording = nil
     }
 
     /// Atomic gate re-check + single-shot consume. Returns false if the episode is unknown,
@@ -716,11 +741,7 @@ final class MeetingAutoDetector {
             self.records[pid] = record
         }
 
-        // Evaluated before eviction below: the active episode must still be present to nudge on
-        // the same tick its window-gone-60s threshold is crossed.
-        if let activeKey = self.activeConsumedEpisodeKey, let activeEpisode = self.episodesByKey[activeKey] {
-            self.evaluateStillRecordingNudge(key: activeKey, episode: activeEpisode, at: now)
-        }
+        self.evaluateEndOfMeeting(at: now)
 
         // Uniform episode-end eviction (window/URL evidence gone ≥60s, or the app quit) applies
         // even to a consumed episode still backing our own live recording — that IS episode end,
@@ -752,15 +773,37 @@ final class MeetingAutoDetector {
         }
     }
 
-    private func evaluateStillRecordingNudge(key: String, episode: Episode, at now: Date) {
-        guard !episode.stillRecordingNudgeShown else { return }
-        guard let record = self.records[episode.pid] else { return }
-        guard record.windowEvidenceAt == nil, let windowLostAt = record.windowLostAt else { return }
-        guard now.timeIntervalSince(windowLostAt) >= Self.micReleaseEpisodeEndSeconds else { return }
-        var updated = episode
-        updated.stillRecordingNudgeShown = true
-        self.episodesByKey[key] = updated
-        self.onStillRecordingNudge?()
+    /// Asks "Meeting ended?" once the app behind our recording looks done: it quit, it let go of
+    /// its audio, or its meeting window has been gone for a while. It only ever asks.
+    private func evaluateEndOfMeeting(at now: Date) {
+        guard var watched = self.watchedRecording else { return }
+        let askAt: Date?
+        if let record = self.records[watched.pid], watched.incarnation == nil || record.incarnation == watched.incarnation {
+            watched.appGoneAt = nil
+            if record.processAudioWasActive { watched.sawProcessAudio = true }
+            var moments: [Date] = []
+            if record.windowEvidenceAt == nil, let windowLostAt = record.windowLostAt {
+                moments.append(windowLostAt.addingTimeInterval(Self.micReleaseEpisodeEndSeconds))
+            }
+            // An unknown audio query is not a release, and an app whose audio we never saw running
+            // gives no release to read. Teams and Webex keep a window open all day, so for them
+            // this is the only sign the call is over.
+            if watched.sawProcessAudio, !self.audioQueryUnknown, let inactiveAt = record.processAudioInactiveAt {
+                moments.append(inactiveAt.addingTimeInterval(Self.endSignalGraceSeconds))
+            }
+            askAt = moments.min()
+        } else {
+            let goneAt = watched.appGoneAt ?? now
+            watched.appGoneAt = goneAt
+            askAt = goneAt.addingTimeInterval(Self.endSignalGraceSeconds)
+        }
+        let shouldAsk = askAt.map { now >= $0 } == true && !watched.asked
+        if shouldAsk { watched.asked = true }
+        self.watchedRecording = watched
+        if shouldAsk {
+            DebugLogger.shared.log("end-of-meeting-asked", source: "MeetingAutoDetector")
+            self.onStillRecordingNudge?()
+        }
     }
 
     // MARK: - Disarm on lock / sleep / fast-user-switch — mic bits are unreliable across these.
@@ -777,6 +820,8 @@ final class MeetingAutoDetector {
         self.lastMicReleaseAt = nil
         self.episodesByKey = [:]
         self.activeConsumedEpisodeKey = nil
+        // With the records gone the app would look like it quit. Stop watching instead of guessing.
+        self.watchedRecording = nil
         self.lastBrowserPollAt = [:]
         for episodeID in unconsumedIDs {
             self.onEpisodeInvalidated?(episodeID)
