@@ -356,6 +356,8 @@ struct MeetingResultCanvas: View {
     let onRenameSession: (String) -> Void
     let onAssignSpeakers: ([SessionSpeakerID: String]) async -> String?
     let onClose: (() -> Void)?
+    /// Opens FluidMeet settings on Integrations, so adding an agent is one step from any meeting.
+    var onOpenIntegrations: (() -> Void)? = nil
 
     @Environment(\.theme) private var theme
     @State private var pendingEditedSegment: MeetingTranscriptSegment?
@@ -699,6 +701,10 @@ struct MeetingResultCanvas: View {
             if self.hasEchoSegments {
                 Divider()
                 Toggle("Show probable echo", isOn: self.$showsProbableEchoes)
+            }
+            if let onOpenIntegrations {
+                Divider()
+                Button("Integrations…", systemImage: "link", action: onOpenIntegrations)
             }
             if let onClose {
                 Divider()

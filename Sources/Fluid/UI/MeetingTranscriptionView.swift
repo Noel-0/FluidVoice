@@ -149,6 +149,8 @@ struct MeetingTranscriptionView: View {
     @State private var pendingBackupSetupRefresh = false
     @State private var cachedSystemDefaultMicrophoneUID: String?
     @State private var isShowingMeetingSettings: Bool
+    /// Which tab the settings sheet opens on; set just before it is shown.
+    @State private var meetingSettingsInitialSection: MeetingSettingsSection = .recording
     @State private var applications: [MeetingApplicationOption] = []
     @State private var microphones: [MeetingMicrophoneOption] = []
     @State private var isRefreshingSources = false
@@ -218,7 +220,8 @@ struct MeetingTranscriptionView: View {
                         onRepairSetup: self.repairRecordingSetup,
                         onEditSetup: self.openMeetingSettings,
                         isRetrying: self.isRetrying,
-                        onCloseSelection: self.closeCanvasAction
+                        onCloseSelection: self.closeCanvasAction,
+                        onOpenIntegrations: self.openMeetingIntegrations
                     )
                     .padding(.trailing, self.isMeetingHistoryVisible && geometry.size.width >= 900 ? 272 : 0)
                     .allowsHitTesting(!self.isMeetingHistoryVisible || geometry.size.width >= 900)
@@ -256,7 +259,8 @@ struct MeetingTranscriptionView: View {
                             onDeleteAudioRequest: { self.pendingDeleteAudioSessionID = $0 },
                             onDeleteRequest: { self.pendingDeleteSessionID = $0 },
                             onRename: { self.renameMeetingSession(sessionID: $0, to: $1) },
-                            onRecordAgain: self.recordAgain
+                            onRecordAgain: self.recordAgain,
+                            onOpenIntegrations: self.openMeetingIntegrations
                         )
                         .frame(width: min(272, geometry.size.width))
                         .disabled(self.summaryActivity.selectionLock != nil)
@@ -350,7 +354,8 @@ struct MeetingTranscriptionView: View {
                 onOpenVoiceEngine: self.onOpenVoiceEngine,
                 onCancel: self.cancelMeetingSettings,
                 onSave: self.saveMeetingSettings,
-                onModelImported: { Task { await self.refreshModelReadiness() } }
+                onModelImported: { Task { await self.refreshModelReadiness() } },
+                initialSection: self.meetingSettingsInitialSection
             )
             .background(FluidSheetOutsideDismiss(onCancel: self.cancelMeetingSettings))
             .interactiveDismissDisabled()
@@ -1152,7 +1157,17 @@ struct MeetingTranscriptionView: View {
         return true
     }
 
+    /// Opens FluidMeet settings on the Integrations tab, from a meeting's More menu.
+    private func openMeetingIntegrations() {
+        self.openMeetingSettings(section: .integrations)
+    }
+
     private func openMeetingSettings() {
+        self.openMeetingSettings(section: .recording)
+    }
+
+    private func openMeetingSettings(section: MeetingSettingsSection) {
+        self.meetingSettingsInitialSection = section
         self.setupDraft.autoDetectEnabled = SettingsStore.shared.meetingAutoDetectEnabled
         self.setupDraft.browserDetectionEnabled = SettingsStore.shared.meetingAutoDetectBrowserEnabled
         self.setupDraftBeforeEditing = self.setupDraft
@@ -1360,6 +1375,7 @@ struct MeetingTranscriptionCanvas: View {
     var onEditSetup: (() -> Void)? = nil
     let isRetrying: Bool
     let onCloseSelection: (() -> Void)?
+    var onOpenIntegrations: (() -> Void)? = nil
 
     @Environment(\.theme) private var theme
 
@@ -1461,7 +1477,8 @@ struct MeetingTranscriptionCanvas: View {
                         onUndo: { self.onUndoCorrection(session.id) },
                         onRenameSession: { title in self.onRenameSession(session.id, title) },
                         onAssignSpeakers: { names in await self.onAssignSpeakers(session.id, names) },
-                        onClose: self.onCloseSelection
+                        onClose: self.onCloseSelection,
+                        onOpenIntegrations: self.onOpenIntegrations
                     )
                 }
             case let .failed(session, message):
@@ -1569,6 +1586,7 @@ private struct MeetingHistoryInspector: View {
     let onDeleteRequest: (MeetingSessionID) -> Void
     let onRename: (MeetingSessionID, String) -> Void
     let onRecordAgain: (MeetingSession) -> Void
+    var onOpenIntegrations: (() -> Void)? = nil
 
     @State private var renameSessionID: MeetingSessionID?
     @State private var renameDraft = ""
@@ -1798,6 +1816,10 @@ private struct MeetingHistoryInspector: View {
                 self.onDeleteAudioRequest(session.id)
             }
             .disabled(!self.isQuiescent)
+        }
+        if let onOpenIntegrations {
+            Divider()
+            Button("Integrations…", systemImage: "link", action: onOpenIntegrations)
         }
         Divider()
         Button("Delete Meeting…", systemImage: "trash", role: .destructive) {
