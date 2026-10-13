@@ -97,6 +97,7 @@ private final class DetectorHarness {
     let workspace = FakeWorkspaceEvents()
     var prompts: [MeetingAutoDetector.PromptRequest] = []
     var nudges = 0
+    var withdrawals = 0
     var invalidated: [UUID] = []
     let detector: MeetingAutoDetector
 
@@ -127,6 +128,7 @@ private final class DetectorHarness {
         )
         self.detector.onPromptRequested = { [weak self] request in self?.prompts.append(request) }
         self.detector.onStillRecordingNudge = { [weak self] in self?.nudges += 1 }
+        self.detector.onStillRecordingNudgeWithdrawn = { [weak self] in self?.withdrawals += 1 }
         self.detector.onEpisodeInvalidated = { [weak self] episodeID in self?.invalidated.append(episodeID) }
     }
 
@@ -1335,6 +1337,140 @@ final class MeetingAutoDetectorTests: XCTestCase {
         h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
         h.detector.tick(at: h.clock.now())
         XCTAssertEqual(h.nudges, 0)
+    }
+
+    /// Starts a Teams recording, lets the call drop, and waits until the question is asked.
+    private func teamsRecordingThatAsked() throws -> DetectorHarness {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmTeams())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+        return h
+    }
+
+    func testTheQuestionIsTakenBackWhenTheCallResumesAndAskedAgainAtTheNextEnd() throws {
+        let h = try self.teamsRecordingThatAsked()
+        h.advance(30)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0, "the call is still down, so the question stays")
+
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 1)
+
+        h.advance(600)
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 2)
+    }
+
+    func testAZoomWindowComingBackTakesTheQuestionBack() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmZoom())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleWindowSnapshot([], at: h.clock.now())
+        h.advance(65)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        h.detector.handleWindowSnapshot([.init(processID: 100, windowID: 900, title: "Zoom Meeting", layer: 0)], at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 1)
+    }
+
+    func testADismissedQuestionStaysAwayForTheRestOfThatRecordingOnly() throws {
+        let h = try self.teamsRecordingThatAsked()
+        h.detector.stillRecordingNudgeDismissed()
+
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0, "there is nothing on screen to take back")
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 10)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        // The next recording of the same call starts fresh.
+        h.detector.recordingStopped()
+        try h.detector.adoptStartedEpisode(episodeID: XCTUnwrap(h.prompts.last?.episodeID))
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 2)
+    }
+
+    func testAnUnreadableAudioQueryDoesNotTakeTheQuestionBack() async throws {
+        let h = try self.teamsRecordingThatAsked()
+        h.audioProcessActivity.snapshotOverride = AudioProcessActivitySnapshot(processes: [], owners: [], queryState: .unknown)
+        await h.detector.pollAudioProcessActivity(at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0)
+    }
+
+    func testAQuitAppIsNotBroughtBackByAnotherAppWithItsProcessID() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmZoom())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: "us.zoom.xos", processID: 100), at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        h.detector.handleWorkspaceEvent(.init(kind: .launched, bundleIdentifier: "com.microsoft.teams2", processID: 100), at: h.clock.now())
+        h.advance(60)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0)
+        XCTAssertEqual(h.nudges, 1)
+    }
+
+    func testScreenLockLeavesAQuestionAlreadyAskedOnScreen() throws {
+        let h = try self.teamsRecordingThatAsked()
+        h.detector.disarmAndClearTransientState()
+        h.advance(120)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0)
+        XCTAssertEqual(h.nudges, 1)
+    }
+
+    func testTheQuestionSitsCenteredAboveThePillAndStaysOnScreen() {
+        let size = MeetingStillRecordingNudgeController.panelSize
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+        let middle = MeetingStillRecordingNudgeController.frame(abovePill: NSRect(x: 678, y: 64, width: 84, height: 32), within: screen)
+        XCTAssertEqual(middle.midX, 720)
+        XCTAssertEqual(middle.minY, 104)
+        XCTAssertEqual(middle.size, size)
+
+        let leftEdge = MeetingStillRecordingNudgeController.frame(abovePill: NSRect(x: 4, y: 64, width: 84, height: 32), within: screen)
+        XCTAssertEqual(leftEdge.minX, 0)
+        let rightEdge = MeetingStillRecordingNudgeController.frame(abovePill: NSRect(x: 1350, y: 64, width: 84, height: 32), within: screen)
+        XCTAssertEqual(rightEdge.maxX, 1440)
+
+        let unknownScreen = MeetingStillRecordingNudgeController.frame(abovePill: NSRect(x: 4, y: 64, width: 84, height: 32), within: nil)
+        XCTAssertEqual(unknownScreen.midX, 46)
+    }
+
+    func testADismissedQuestionTellsTheDetectorAndStopDoesNot() {
+        let controller = MeetingStillRecordingNudgeController.shared
+        let earlierDismiss = controller.onDismiss
+        defer { controller.onDismiss = earlierDismiss }
+        var dismissals = 0
+        controller.onDismiss = { dismissals += 1 }
+
+        controller.hide()
+        XCTAssertEqual(dismissals, 0, "taking the question down is not the user closing it")
+        controller.dismiss()
+        XCTAssertEqual(dismissals, 1)
+        XCTAssertFalse(controller.isPresented)
     }
 
     func testNothingIsAskedOnceOurRecordingHasStopped() throws {

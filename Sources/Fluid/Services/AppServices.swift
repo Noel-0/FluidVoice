@@ -195,6 +195,9 @@ final class AppServices: ObservableObject {
         detector.onStillRecordingNudge = {
             MeetingStillRecordingNudgeController.shared.present()
         }
+        detector.onStillRecordingNudgeWithdrawn = {
+            MeetingStillRecordingNudgeController.shared.hide()
+        }
         detector.onSuggestDisablingAutoDetect = {
             MeetingAutoDetectDismissalAdvisor.shared.shouldSuggest = true
         }
@@ -215,6 +218,9 @@ final class AppServices: ObservableObject {
         }
         MeetingDetectionPromptController.shared.onTimeout = { [weak self] episodeID in
             self?._meetingAutoDetector?.timeoutDismissed(episodeID: episodeID)
+        }
+        MeetingStillRecordingNudgeController.shared.onDismiss = { [weak self] in
+            self?._meetingAutoDetector?.stillRecordingNudgeDismissed()
         }
         MeetingStillRecordingNudgeController.shared.onStop = { [weak self] in
             guard let self else { return }

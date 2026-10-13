@@ -62,6 +62,8 @@ final class MeetingAutoDetector {
 
     var onPromptRequested: ((PromptRequest) -> Void)?
     var onStillRecordingNudge: (() -> Void)?
+    /// The call came back after we asked whether it ended. Take the question down.
+    var onStillRecordingNudgeWithdrawn: (() -> Void)?
     var onSuggestDisablingAutoDetect: (() -> Void)?
     var onEpisodeInvalidated: ((UUID) -> Void)?
     var onHealthChanged: ((Health) -> Void)?
@@ -113,6 +115,8 @@ final class MeetingAutoDetector {
         var sawProcessAudio = false
         var appGoneAt: Date?
         var asked = false
+        /// The user waved the question away. It stays away for the rest of this recording.
+        var silenced = false
     }
 
     private let workspaceEvents: any WorkspaceEventsProviding
@@ -674,6 +678,11 @@ final class MeetingAutoDetector {
         self.watchedRecording = nil
     }
 
+    /// The user closed the "Meeting ended?" question without stopping.
+    func stillRecordingNudgeDismissed() {
+        self.watchedRecording?.silenced = true
+    }
+
     /// Atomic gate re-check + single-shot consume. Returns false if the episode is unknown,
     /// already consumed, or the gate no longer passes — callers must not proceed with Start.
     @discardableResult
@@ -785,7 +794,7 @@ final class MeetingAutoDetector {
     /// Asks "Meeting ended?" once the app behind our recording looks done: it quit, it let go of
     /// its audio, or its meeting window has been gone for a while. It only ever asks.
     private func evaluateEndOfMeeting(at now: Date) {
-        guard var watched = self.watchedRecording else { return }
+        guard var watched = self.watchedRecording, !watched.silenced else { return }
         let askAt: Date?
         if let record = self.records[watched.pid], watched.incarnation == nil || record.incarnation == watched.incarnation {
             watched.appGoneAt = nil
@@ -808,11 +817,18 @@ final class MeetingAutoDetector {
         // Without live captions there is no speech to wait for, and the app's own signal decides.
         let stillTalking = self.lastSpeechAt().map { now.timeIntervalSince($0) < Self.speechQuietSeconds } == true
         let shouldAsk = askAt.map { now >= $0 } == true && !stillTalking && !watched.asked
+        // Every sign of the end is gone again: the call resumed. An audio query we cannot read is
+        // not that, so it changes nothing. The question can then come back at the next real end.
+        let shouldWithdraw = askAt == nil && watched.asked && !(self.audioQueryUnknown && watched.sawProcessAudio)
         if shouldAsk { watched.asked = true }
+        if shouldWithdraw { watched.asked = false }
         self.watchedRecording = watched
         if shouldAsk {
             DebugLogger.shared.log("end-of-meeting-asked", source: "MeetingAutoDetector")
             self.onStillRecordingNudge?()
+        } else if shouldWithdraw {
+            DebugLogger.shared.log("end-of-meeting-withdrawn", source: "MeetingAutoDetector")
+            self.onStillRecordingNudgeWithdrawn?()
         }
     }
 
@@ -831,6 +847,7 @@ final class MeetingAutoDetector {
         self.episodesByKey = [:]
         self.activeConsumedEpisodeKey = nil
         // With the records gone the app would look like it quit. Stop watching instead of guessing.
+        // A question already on screen stays there for the user to answer.
         self.watchedRecording = nil
         self.lastBrowserPollAt = [:]
         for episodeID in unconsumedIDs {
