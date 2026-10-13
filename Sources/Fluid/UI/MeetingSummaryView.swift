@@ -167,7 +167,7 @@ struct MeetingSummaryView: View {
 
     private var destination: String {
         if self.usesOnDevice {
-            return "Runs on your Mac · Nothing is sent anywhere · Summaries are written in English"
+            return "Nothing leaves your Mac · Summaries are in English"
         }
         guard let route else { return "Choose a configured provider and model to continue." }
         let host = URL(string: route.baseURL)?.host ?? route.providerName

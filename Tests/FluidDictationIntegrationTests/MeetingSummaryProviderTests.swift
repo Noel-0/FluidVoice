@@ -51,10 +51,10 @@ final class MeetingSummaryProviderTests: XCTestCase {
             modelID: "local-model-id",
             text: "Summary",
             providerID: MeetingSummaryOnDevice.providerID,
-            providerName: MeetingSummaryOnDevice.providerName,
+            providerName: "On device - Provider",
             modelName: "Local Model"
         )
-        XCTAssertEqual(saved.provenance, "On this Mac · Local Model")
+        XCTAssertEqual(saved.provenance, "On device - Provider · Local Model")
         XCTAssertTrue(saved.isCurrent(transcriptHash: "t", promptHash: nil))
         XCTAssertFalse(saved.isCurrent(transcriptHash: "changed", promptHash: nil))
         let restored = try JSONDecoder().decode(MeetingSummaryController.SavedSummary.self, from: JSONEncoder().encode(saved))
