@@ -1612,6 +1612,96 @@ final class MeetingAutoDetectorTests: XCTestCase {
         )
     }
 
+    // MARK: - The call comes back in ways the first version missed
+
+    func testAMutedTeamsCallThatResumesAfterALongGapTakesTheQuestionBack() async throws {
+        let h = try self.teamsRecordingThatAsked()
+        // Long enough for the start-prompt episode to retire.
+        h.advance(120)
+        h.detector.tick(at: h.clock.now())
+
+        // Rejoined on mute: Teams plays the call but is not using the microphone.
+        let teams = MeetingProcessOwner(processID: 300, bundleIdentifier: "com.microsoft.teams2", bundlePath: "/Applications/Microsoft Teams.app")
+        let helper = AudioProcessDescriptor(
+            processID: 301,
+            bundleIdentifier: nil,
+            executablePath: "/Applications/Microsoft Teams.app/Contents/Helpers/Teams Helper",
+            isInputRunning: false,
+            isOutputRunning: true
+        )
+        h.audioProcessActivity.snapshotOverride = AudioProcessActivitySnapshot(processes: [helper], owners: [teams], queryState: .valid)
+        await h.detector.pollAudioProcessActivity(at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 1)
+        XCTAssertEqual(h.prompts.count, 1, "sound without a microphone still never raises a new start prompt")
+    }
+
+    func testAMeetingAppThatRestartsAndRejoinsIsFollowed() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmZoom())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: "us.zoom.xos", processID: 100), at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        // Zoom is back under a new process but not in a call yet: nothing changes.
+        h.detector.handleWorkspaceEvent(.init(kind: .activated, bundleIdentifier: "us.zoom.xos", processID: 101), at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0)
+
+        h.detector.handleWindowSnapshot([.init(processID: 101, windowID: 901, title: "Zoom Meeting", layer: 0)], at: h.clock.now())
+        h.detector.handleAudioProcessActivity(true, pid: 101, at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 1)
+
+        // From here the new process is the one that is watched.
+        h.advance(300)
+        h.detector.handleAudioProcessActivity(false, pid: 101, at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 2)
+    }
+
+    func testADifferentMeetingAppInACallIsNeverTakenForTheOneThatQuit() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmZoom())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: "us.zoom.xos", processID: 100), at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        h.detector.handleWorkspaceEvent(.init(kind: .activated, bundleIdentifier: "com.microsoft.teams2", processID: 300), at: h.clock.now())
+        h.detector.handleWindowSnapshot([.init(processID: 300, windowID: 950, title: nil, layer: 0)], at: h.clock.now())
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0)
+    }
+
+    func testABrowserThatRestartsAndRejoinsIsFollowed() async throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmChromeMeet())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        await h.pollChrome(microphoneInUse: true)
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: "com.google.Chrome", processID: 8), at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        h.detector.handleWorkspaceEvent(.init(kind: .launched, bundleIdentifier: "com.google.Chrome", processID: 9), at: h.clock.now())
+        await h.pollChrome(microphoneInUse: false, pid: 9)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0, "the browser is open again but not in a call")
+
+        await h.pollChrome(microphoneInUse: true, pid: 9)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 1)
+    }
+
     func testNothingIsAskedOnceOurRecordingHasStopped() throws {
         let h = DetectorHarness()
         let episodeID = try XCTUnwrap(h.confirmZoom())

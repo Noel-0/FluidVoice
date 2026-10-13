@@ -110,6 +110,7 @@ final class MeetingAutoDetector {
     /// retired by rules written for the next start prompt and can go while we still record.
     private struct WatchedRecording {
         var pid: Int32
+        var bundleIdentifier: String
         var tier: MeetingDetectionTier
         var incarnation: UInt64?
         /// The app's own audio was seen running during this recording, so seeing it stop means something.
@@ -388,7 +389,11 @@ final class MeetingAutoDetector {
             // to make output-only activity meaningful. Zoom's muted output-only path remains
             // supported because Zoom also requires an explicit meeting-window title.
             let hasEstablishedEpisode = self.episodesByKey.values.contains { $0.pid == pid }
-            if isActive, !hasInput, record.bundleIdentifier != "us.zoom.xos", !hasEstablishedEpisode {
+            // The app behind our own recording stays established after its episode retires, so a
+            // muted call that resumes still reads as audio. We are busy recording, so this cannot
+            // raise a start prompt.
+            let isBehindOurRecording = self.watchedRecording?.bundleIdentifier == record.bundleIdentifier
+            if isActive, !hasInput, record.bundleIdentifier != "us.zoom.xos", !hasEstablishedEpisode, !isBehindOurRecording {
                 self.handleAudioProcessActivity(false, pid: pid, at: now)
                 continue
             }
@@ -406,6 +411,11 @@ final class MeetingAutoDetector {
         )
         if let inputByPID {
             watched.browserMicUnknown = false
+            if !self.isStillRunning(watched) {
+                self.follow(&watched, to: self.records.values.filter {
+                    $0.bundleIdentifier == watched.bundleIdentifier && $0.tier == .browserTier2 && inputByPID[$0.pid] == true
+                })
+            }
             if inputByPID[watched.pid] == true {
                 watched.sawProcessAudio = true
                 watched.browserMicReleasedAt = nil
@@ -418,6 +428,23 @@ final class MeetingAutoDetector {
             watched.browserMicReleasedAt = nil
         }
         self.watchedRecording = watched
+    }
+
+    private func isStillRunning(_ watched: WatchedRecording) -> Bool {
+        guard let record = self.records[watched.pid] else { return false }
+        return watched.incarnation == nil || record.incarnation == watched.incarnation
+    }
+
+    /// The app behind the recording crashed or was restarted and is in a call again under a new
+    /// process. Follow it, so the question can be taken back. Only one clear match of the same
+    /// app is ever adopted.
+    private func follow(_ watched: inout WatchedRecording, to relaunched: [CandidateRecord]) {
+        guard relaunched.count == 1, let record = relaunched.first else { return }
+        watched.pid = record.pid
+        watched.incarnation = record.incarnation
+        watched.sawProcessAudio = true
+        watched.appGoneAt = nil
+        DebugLogger.shared.log("end-of-meeting-watch-followed bundle=\(record.bundleIdentifier)", source: "MeetingAutoDetector")
     }
 
     func handleAudioProcessActivity(_ isActive: Bool, pid: Int32, at now: Date) {
@@ -697,6 +724,7 @@ final class MeetingAutoDetector {
         let record = self.records[episode.pid]
         self.watchedRecording = WatchedRecording(
             pid: episode.pid,
+            bundleIdentifier: episode.bundleIdentifier,
             tier: episode.tier,
             incarnation: record?.incarnation,
             sawProcessAudio: record?.processAudioWasActive == true
@@ -825,9 +853,14 @@ final class MeetingAutoDetector {
     /// its audio, or its meeting window has been gone for a while. It only ever asks.
     private func evaluateEndOfMeeting(at now: Date) {
         guard var watched = self.watchedRecording, !watched.silenced else { return }
+        if watched.tier == .nativeTier1, !self.isStillRunning(watched) {
+            self.follow(&watched, to: self.records.values.filter {
+                $0.bundleIdentifier == watched.bundleIdentifier && $0.tier == .nativeTier1 && $0.processAudioWasActive && $0.hasLiveWindow
+            })
+        }
         let askAt: Date?
         var audioUnknown = false
-        if let record = self.records[watched.pid], watched.incarnation == nil || record.incarnation == watched.incarnation {
+        if let record = self.records[watched.pid], self.isStillRunning(watched) {
             watched.appGoneAt = nil
             var moments: [Date] = []
             if record.tier == .browserTier2 {
