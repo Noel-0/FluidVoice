@@ -22,35 +22,26 @@ struct ReleaseHighlightsContent {
 
     static func current(hasPrivateAI: Bool) -> Self {
         Self(
-            release: "1.6.10",
-            title: "Say hello to what’s new.",
-            subtitle: "Three new ways to make FluidVoice yours.",
+            release: "1.6.12",
+            title: "A smoother start.",
+            subtitle: "More reliable startup and model downloads.",
             features: [
                 Feature(
-                    id: "fluidmeet",
-                    preview: .meeting,
-                    eyebrow: "MEETINGS, MEET FLUID",
-                    title: "Introducing FluidMeet",
-                    detail: "Stay in the conversation. Local recording, live captions, and AI summaries.",
-                    action: "Open FluidMeet",
-                    destination: .meetings
-                ),
-                Feature(
-                    id: "redesign",
+                    id: "startup",
                     preview: .dashboard,
-                    eyebrow: "A FRESH PERSPECTIVE",
-                    title: "Beautifully redesigned",
-                    detail: "Your own dashboard. Search across the app. Everything feels right at home.",
-                    action: "See the new look",
+                    eyebrow: "READY WHEN YOU ARE",
+                    title: "Quieter login launches",
+                    detail: "Keep the window hidden at login, then reopen it from the menu bar without a duplicate.",
+                    action: "Open dashboard",
                     destination: .dashboard
                 ),
                 Feature(
                     id: "models",
                     preview: .models,
                     eyebrow: hasPrivateAI ? "ON YOUR MAC. FOR YOU." : "YOUR AI, YOUR WAY",
-                    title: hasPrivateAI ? "Meet the Fluid models" : "Find your AI",
+                    title: hasPrivateAI ? "More reliable downloads" : "Find your AI",
                     detail: hasPrivateAI
-                        ? "Fast cleanup to thoughtful rewrites. Explore local AI built for your words."
+                        ? "Model downloads retry brief interruptions and resume saved progress. Working models stay available during a failed update."
                         : "Choose your AI provider and make every dictation sound more like you.",
                     action: hasPrivateAI ? "Explore the models" : "Explore AI providers",
                     destination: .aiProviders
