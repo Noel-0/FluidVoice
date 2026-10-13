@@ -16,6 +16,7 @@ nonisolated enum MeetingSummaryOnDevice {
     static var providerName: String {
         "On device - \(PrivateAIProviderFeature.shared.providerName)"
     }
+
     /// The on-device model reads the whole transcript in one request.
     static let maximumTranscriptBytes = 96_000
 }
