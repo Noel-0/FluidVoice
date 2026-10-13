@@ -7,11 +7,22 @@ nonisolated struct MeetingSummarySelection: Codable, Equatable {
     var modelsByProvider: [String: String] = [:]
 }
 
+/// The summary model that runs on this Mac. It is offered beside the cloud providers only in
+/// builds that include a private AI provider with a meeting summary model.
+nonisolated enum MeetingSummaryOnDevice {
+    /// Reserved: no ModelRepository provider uses this ID.
+    static let providerID = "on-device"
+    static let providerName = "On this Mac"
+    /// The on-device model reads the whole transcript in one request.
+    static let maximumTranscriptBytes = 96_000
+}
+
 @MainActor
 final class MeetingSummaryPreferences: ObservableObject {
     private let defaults: UserDefaults
     private static let key = "MeetingSummarySelection"
     private static let customPromptKey = "MeetingSummaryCustomPrompt"
+    private static let thinksFirstKey = "MeetingSummaryThinksFirst"
     @Published var selection: MeetingSummarySelection {
         didSet {
             if let data = try? JSONEncoder().encode(self.selection) {
@@ -27,9 +38,17 @@ final class MeetingSummaryPreferences: ObservableObject {
         }
     }
 
+    /// Whether the on-device model reasons before it writes. On until the user turns it off.
+    @Published var thinksFirst: Bool {
+        didSet {
+            self.defaults.set(self.thinksFirst, forKey: Self.thinksFirstKey)
+        }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.customPrompt = defaults.string(forKey: Self.customPromptKey) ?? ""
+        self.thinksFirst = defaults.object(forKey: Self.thinksFirstKey) as? Bool ?? true
         var selection = defaults.data(forKey: Self.key)
             .flatMap { try? JSONDecoder().decode(MeetingSummarySelection.self, from: $0) } ?? .init()
         // Pre-release #1028 builds stored on-device, CLI, and linked-settings routes under this prefix.

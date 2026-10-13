@@ -31,6 +31,36 @@ final class MeetingSummaryProviderTests: XCTestCase {
         XCTAssertEqual(preferences.selection.modelsByProvider["openai"], "summary-model")
     }
 
+    func testOnDeviceChoiceAndThinkingPersist() throws {
+        let suite = "MeetingSummaryTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = MeetingSummaryPreferences(defaults: defaults)
+        XCTAssertTrue(preferences.thinksFirst, "Thinking is on until the user turns it off")
+        preferences.thinksFirst = false
+        preferences.selection.providerID = MeetingSummaryOnDevice.providerID
+        let restored = MeetingSummaryPreferences(defaults: defaults)
+        XCTAssertFalse(restored.thinksFirst)
+        XCTAssertEqual(restored.selection.providerID, MeetingSummaryOnDevice.providerID, "The on-device choice is not a pre-release route")
+        XCTAssertTrue(restored.selection.modelsByProvider.isEmpty, "Choosing on-device adds no cloud model")
+    }
+
+    func testOnDeviceSummaryShowsItsModelNameAndStaysVisible() throws {
+        let saved = MeetingSummaryController.SavedSummary(
+            transcriptHash: "t",
+            modelID: "local-model-id",
+            text: "Summary",
+            providerID: MeetingSummaryOnDevice.providerID,
+            providerName: MeetingSummaryOnDevice.providerName,
+            modelName: "Local Model"
+        )
+        XCTAssertEqual(saved.provenance, "On this Mac · Local Model")
+        XCTAssertTrue(saved.isCurrent(transcriptHash: "t", promptHash: nil))
+        XCTAssertFalse(saved.isCurrent(transcriptHash: "changed", promptHash: nil))
+        let restored = try JSONDecoder().decode(MeetingSummaryController.SavedSummary.self, from: JSONEncoder().encode(saved))
+        XCTAssertEqual(restored.modelName, "Local Model")
+    }
+
     func testLegacySummaryLoadsWithoutProviderMetadata() throws {
         let data = Data(#"{"transcriptHash":"old","modelID":"local-summary","text":"Previous summary"}"#.utf8)
         let saved = try JSONDecoder().decode(MeetingSummaryController.SavedSummary.self, from: data)

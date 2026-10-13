@@ -14,6 +14,9 @@ struct MeetingSummaryView: View {
     @State private var catalogLoaded = false
     @State private var route: MeetingSummaryRoute?
     @State private var readinessIssue: String?
+    /// The on-device summary model, read when the providers are; nil in builds without one.
+    @State private var onDeviceModel: PrivateAIRegisteredModel?
+    @State private var confirmDeletion = false
 
     private var refreshID: String {
         // A prompt edit re-checks the saved custom summary, so an older result never stays on screen.
@@ -40,6 +43,14 @@ struct MeetingSummaryView: View {
         return self.catalog.filter { seen.insert($0.providerID).inserted }
     }
 
+    private var usesOnDevice: Bool {
+        self.onDeviceModel != nil && self.providerID == MeetingSummaryOnDevice.providerID
+    }
+
+    private var hasChoices: Bool {
+        !self.catalog.isEmpty || self.onDeviceModel != nil
+    }
+
     private var needsCustomPrompt: Bool {
         self.kind == .custom && self.preferences.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -51,7 +62,7 @@ struct MeetingSummaryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.lg) {
             self.configurationPanel
-            if let error = self.controller.error ?? self.readinessIssue, !self.catalog.isEmpty {
+            if let error = self.controller.error ?? self.readinessIssue, self.hasChoices {
                 Text(error)
                     .font(self.theme.typography.bodySmall)
                     .foregroundStyle(self.theme.palette.warning)
@@ -79,6 +90,12 @@ struct MeetingSummaryView: View {
         }
         .onChange(of: self.preferences.selection) { _, _ in self.resolveRoute() }
         .onDisappear { self.controller.cancel() }
+        .alert("Delete summary model?", isPresented: self.$confirmDeletion) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) { self.controller.deleteModel(asr: AppServices.shared.asr) }
+        } message: {
+            Text("Remove the \(self.downloadSize.map { "\($0) " } ?? "")download from this Mac. Your meetings and saved summaries stay. You can download it again anytime.")
+        }
     }
 
     private var configurationPanel: some View {
@@ -97,18 +114,18 @@ struct MeetingSummaryView: View {
             }
             if !self.catalogLoaded {
                 ProgressView().controlSize(.small)
-            } else if self.catalog.isEmpty {
+            } else if !self.hasChoices {
                 self.setupPrompt
             } else {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: self.theme.metrics.spacing.md) {
                         self.providerPicker.frame(minWidth: 180)
-                        self.modelPicker.frame(minWidth: 170)
+                        self.modelOrThinking.frame(minWidth: 170)
                         self.kindPicker.frame(minWidth: 160)
                     }
                     VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
                         self.providerPicker
-                        self.modelPicker
+                        self.modelOrThinking
                         self.kindPicker
                     }
                 }
@@ -117,12 +134,17 @@ struct MeetingSummaryView: View {
                     self.customPromptEditor
                 }
                 self.actions
+                if self.usesOnDevice, self.controller.downloading {
+                    Text(PrivateAIModelDownloadProgressText.detailText(for: self.controller.progress))
+                        .font(self.theme.typography.caption)
+                        .foregroundStyle(self.theme.palette.secondaryText)
+                }
                 if self.session == nil {
                     Text("Open a completed meeting to summarize its transcript.")
                         .font(self.theme.typography.bodySmall)
                         .foregroundStyle(self.theme.palette.secondaryText)
                 }
-                Label(self.destination, systemImage: "network")
+                Label(self.destination, systemImage: self.usesOnDevice ? "lock" : "network")
                     .font(self.theme.typography.caption)
                     .foregroundStyle(self.theme.palette.secondaryText)
             }
@@ -144,6 +166,9 @@ struct MeetingSummaryView: View {
     }
 
     private var destination: String {
+        if self.usesOnDevice {
+            return "Runs on your Mac · Nothing is sent anywhere · Summaries are written in English"
+        }
         guard let route else { return "Choose a configured provider and model to continue." }
         let host = URL(string: route.baseURL)?.host ?? route.providerName
         return "Transcript sent to \(route.providerName) (\(host)) · Audio stays on your Mac"
@@ -157,13 +182,47 @@ struct MeetingSummaryView: View {
                 set: { self.selectProvider($0) }
             )) {
                 ForEach(self.providers) { provider in Text(provider.providerName).tag(provider.providerID) }
-                if !self.providers.contains(where: { $0.providerID == self.providerID }) {
+                if self.onDeviceModel != nil {
+                    Text(MeetingSummaryOnDevice.providerName).tag(MeetingSummaryOnDevice.providerID)
+                }
+                if !self.usesOnDevice, !self.providers.contains(where: { $0.providerID == self.providerID }) {
                     Text(self.providerID.isEmpty ? "Choose provider" : "Unavailable provider").tag(self.providerID)
                 }
             }
             .labelsHidden().pickerStyle(.menu).fluidDropdownStyle()
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// A cloud provider offers its models; the on-device model offers how carefully it works.
+    @ViewBuilder
+    private var modelOrThinking: some View {
+        if self.usesOnDevice {
+            self.thinkingControl
+        } else {
+            self.modelPicker
+        }
+    }
+
+    private var thinkingControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Think first").font(self.theme.typography.caption)
+            HStack(spacing: self.theme.metrics.spacing.sm) {
+                Toggle("Think first", isOn: self.$preferences.thinksFirst)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .accessibilityLabel("Think before summarizing")
+                Text(self.preferences.thinksFirst ? "More careful, slower" : "Faster")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help("The model reasons about the transcript before it writes the summary.")
+        }
+    }
+
+    private var downloadSize: String? {
+        self.onDeviceModel?.artifact.byteCount.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
     }
 
     private var modelPicker: some View {
@@ -231,22 +290,74 @@ struct MeetingSummaryView: View {
                     ProgressView().controlSize(.small)
                     Text("Summarizing…").font(self.theme.typography.bodySmall)
                     Button("Cancel") { self.controller.cancel() }.fluidGlassAction()
-                } else {
-                    Button(self.controller.output.isEmpty ? "Generate summary" : "Regenerate summary", systemImage: "sparkles") {
-                        self.resolveRoute()
-                        if let session, let route {
-                            self.controller.summarize(
-                                session: session,
-                                kind: self.kind,
-                                route: route,
-                                customPrompt: self.preferences.customPrompt
-                            )
+                } else if self.usesOnDevice, self.controller.downloading {
+                    Button {} label: {
+                        VStack(spacing: 4) {
+                            Text(PrivateAIModelDownloadProgressText.buttonTitle(for: self.controller.progress))
+                            ProgressView(value: self.controller.progress?.fractionCompleted)
+                                .progressViewStyle(.linear)
+                                .frame(width: 160)
+                                .controlSize(.mini)
                         }
                     }
+                    .fluidGlassAction()
+                    .disabled(true)
+                    Button("Cancel") { self.controller.cancel() }.fluidGlassAction()
+                } else if self.usesOnDevice, self.controller.deleting {
+                    ProgressView().controlSize(.small)
+                    Text("Deleting download…").font(self.theme.typography.bodySmall)
+                } else if self.usesOnDevice, !self.controller.installed {
+                    Button(self.downloadSize.map { "Download · \($0)" } ?? "Download", systemImage: "arrow.down.circle") {
+                        self.controller.download()
+                    }
                     .fluidGlassAction(prominent: true)
-                    .disabled(self.route == nil || self.needsCustomPrompt || self.session?.transcriptSegments.isEmpty != false || !self.isQuiescent)
+                    .disabled(!self.isQuiescent)
+                } else {
+                    Button(self.controller.output.isEmpty ? "Generate summary" : "Regenerate summary", systemImage: "sparkles") {
+                        self.generate()
+                    }
+                    .fluidGlassAction(prominent: true)
+                    .disabled(
+                        (!self.usesOnDevice && self.route == nil) || self.needsCustomPrompt
+                            || self.session?.transcriptSegments.isEmpty != false || !self.isQuiescent
+                    )
+                }
+                if self.usesOnDevice, self.controller.installed {
+                    Menu {
+                        Button("Delete model", systemImage: "trash", role: .destructive) {
+                            self.confirmDeletion = true
+                        }
+                        .disabled(self.controller.busy || self.controller.checking || !self.isQuiescent)
+                    } label: { Image(systemName: "ellipsis") }
+                        .menuIndicator(.hidden)
+                        .fluidGlassAction(circular: true)
+                        .accessibilityLabel("Summary model actions")
+                        .disabled(self.controller.busy)
                 }
             }
+        }
+    }
+
+    private func generate() {
+        guard let session else { return }
+        if self.usesOnDevice {
+            self.controller.summarizeOnDevice(
+                session: session,
+                kind: self.kind,
+                customPrompt: self.preferences.customPrompt,
+                thinking: self.preferences.thinksFirst,
+                asr: AppServices.shared.asr
+            )
+            return
+        }
+        self.resolveRoute()
+        if let route {
+            self.controller.summarize(
+                session: session,
+                kind: self.kind,
+                route: route,
+                customPrompt: self.preferences.customPrompt
+            )
         }
     }
 
@@ -277,6 +388,11 @@ struct MeetingSummaryView: View {
     private func selectProvider(_ providerID: String) {
         var selection = self.preferences.selection
         selection.providerID = providerID
+        // The on-device choice has one model and no ModelRepository entry.
+        guard providerID != MeetingSummaryOnDevice.providerID else {
+            self.preferences.selection = selection
+            return
+        }
         let key = ModelRepository.shared.providerKey(for: providerID)
         if selection.modelsByProvider[key] == nil {
             let models = self.catalog.filter { ModelRepository.shared.providerKey(for: $0.providerID) == key }
@@ -288,17 +404,26 @@ struct MeetingSummaryView: View {
 
     private func reloadProviders() {
         self.catalog = self.settings.commandModeModelCatalog()
+        self.onDeviceModel = self.controller.model
         self.catalogLoaded = true
         // First use starts from the AI Settings provider when it is verified; later choices stay independent.
         if self.providerID.isEmpty, let first = self.providers.first {
             let global = ModelRepository.shared.providerKey(for: self.settings.selectedProviderID)
             let preferred = self.providers.first { ModelRepository.shared.providerKey(for: $0.providerID) == global }
             self.selectProvider((preferred ?? first).providerID)
+        } else if self.providerID.isEmpty, self.onDeviceModel != nil {
+            // No cloud provider is set up, so the model on this Mac is the one choice.
+            self.selectProvider(MeetingSummaryOnDevice.providerID)
         }
         self.resolveRoute()
     }
 
     private func resolveRoute() {
+        guard !self.usesOnDevice else {
+            self.route = nil
+            self.readinessIssue = nil
+            return
+        }
         do {
             self.route = try MeetingSummaryRoute.resolve(self.preferences.selection, settings: self.settings)
             self.readinessIssue = nil
