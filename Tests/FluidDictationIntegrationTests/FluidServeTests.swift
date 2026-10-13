@@ -410,12 +410,17 @@ final class FluidServeTests: XCTestCase {
         await model.install(.claudeCode)
         model.copyAgentInstructions()
         XCTAssertTrue(model.otherAgentsShared)
+        XCTAssertFalse(
+            model.sharedOnlyWithOtherAgents,
+            "Access is one switch: with a skill installed, stopping other agents would stop nothing, so it is not offered"
+        )
 
         // Removing the last skill FluidVoice can see must not cut off the agent it cannot see.
         await model.remove(.claudeCode)
         XCTAssertEqual(model.statuses[.claudeCode], .notInstalled)
         XCTAssertTrue(self.sharing.value)
         XCTAssertTrue(model.otherAgentsShared)
+        XCTAssertTrue(model.sharedOnlyWithOtherAgents, "Now stopping them turns access off, so it is offered")
 
         await model.stopSharingWithOtherAgents()
         XCTAssertFalse(model.otherAgentsShared)

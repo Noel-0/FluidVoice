@@ -37,6 +37,12 @@ final class FluidServeSettingsModel: ObservableObject {
     /// copy of the skill, so only the user can say when this ends.
     @Published private(set) var otherAgentsShared = false
 
+    /// True when agents set up from copied instructions are the only reason meetings are shared.
+    /// Access is one switch for the whole Mac, so only then does stopping them stop anything.
+    var sharedOnlyWithOtherAgents: Bool {
+        self.otherAgentsShared && !self.statuses.values.contains { $0 == .installed || $0 == .needsUpdate }
+    }
+
     private let home: URL
     private let toolURL: () -> URL?
     private let selfCheck: @Sendable (URL) -> FluidServeSelfCheck.Outcome
@@ -98,8 +104,8 @@ final class FluidServeSettingsModel: ObservableObject {
         Task { await self.refresh() }
     }
 
-    /// Ends sharing with agents set up from copied instructions. Meetings stay shared only if
-    /// Claude Code or Codex still has the skill.
+    /// Ends sharing with agents set up from copied instructions. The page offers this only when
+    /// no Claude Code or Codex skill is left, so it turns meeting access off for every agent.
     func stopSharingWithOtherAgents() async {
         await self.inTurn {
             self.adoptedStateFoundOnDisk = true
@@ -363,7 +369,7 @@ struct MeetingAgentIntegrations: View {
                         .font(self.theme.typography.caption)
                         .foregroundStyle(Color.fluidGreen)
                         .lineLimit(1)
-                } else if self.model.otherAgentsShared {
+                } else if self.model.sharedOnlyWithOtherAgents {
                     Label("Sharing is on", systemImage: "checkmark.circle.fill")
                         .font(self.theme.typography.caption)
                         .foregroundStyle(Color.fluidGreen)
@@ -377,10 +383,10 @@ struct MeetingAgentIntegrations: View {
             Spacer(minLength: self.theme.metrics.spacing.md)
             Button("Copy instructions") { self.model.copyAgentInstructions() }
                 .meetingGlassAction()
-            if self.model.otherAgentsShared {
+            if self.model.sharedOnlyWithOtherAgents {
                 Button("Stop sharing") { Task { await self.model.stopSharingWithOtherAgents() } }
                     .meetingGlassAction()
-                    .help("Agents you set up from copied instructions can no longer read your meetings.")
+                    .help("No agent can read your meetings until you add one again.")
             }
         }
         .padding(.vertical, self.theme.metrics.spacing.sm)
