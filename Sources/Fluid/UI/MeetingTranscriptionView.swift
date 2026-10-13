@@ -14,6 +14,21 @@ nonisolated struct MeetingApplicationOption: Identifiable, Equatable, Sendable {
     }
 }
 
+extension [MeetingApplicationOption] {
+    /// The usual meeting sources first, then the rest with background helpers last.
+    @MainActor
+    var pickerSections: (usual: [MeetingApplicationOption], others: [MeetingApplicationOption]) {
+        MeetingAppRegistry.pickerSections(
+            self,
+            bundleIdentifier: { $0.identity.bundleIdentifier },
+            name: { $0.identity.displayName },
+            isBackgroundItem: { option in
+                option.identity.processID.flatMap { NSRunningApplication(processIdentifier: $0) }?.activationPolicy != .regular
+            }
+        )
+    }
+}
+
 struct MeetingMicrophoneOption: Identifiable, Equatable {
     let id: String
     let identity: MeetingMicrophoneIdentity
@@ -2088,11 +2103,11 @@ private struct MeetingSetupCanvas: View {
     }
 
     private var meetingApplications: [MeetingApplicationOption] {
-        self.applications.filter { MeetingAppRegistry.tier(forBundleIdentifier: $0.identity.bundleIdentifier) != nil }
+        self.applications.pickerSections.usual
     }
 
     private var otherApplications: [MeetingApplicationOption] {
-        self.applications.filter { MeetingAppRegistry.tier(forBundleIdentifier: $0.identity.bundleIdentifier) == nil }
+        self.applications.pickerSections.others
     }
 
     var body: some View {

@@ -1512,6 +1512,42 @@ final class MeetingAutoDetectorTests: XCTestCase {
 
     // MARK: - Registry / URL matcher sanity
 
+    func testSourcePickerPutsTheUsualMeetingAppsFirstAndBackgroundHelpersLast() {
+        struct App: Equatable {
+            var bundle: String
+            var name: String
+            var background = false
+        }
+        let apps = [
+            App(bundle: "com.apple.controlcenter", name: "Control Center", background: true),
+            App(bundle: "com.apple.Safari", name: "Safari"),
+            App(bundle: "com.apple.Music", name: "Music"),
+            App(bundle: "com.tinyspeck.slackmacgap", name: "Slack"),
+            App(bundle: "com.apple.AirPlayUIAgent", name: "AirPlayUIAgent", background: true),
+            App(bundle: "com.google.Chrome", name: "Google Chrome"),
+            App(bundle: "com.google.Chrome.app.kjgfgldnnfoeklkmfkjfagphfepbbdan", name: "Google Meet"),
+            App(bundle: "com.apple.finder", name: "Finder"),
+            App(bundle: "com.microsoft.teams2", name: "Microsoft Teams"),
+            App(bundle: "us.zoom.xos", name: "zoom.us"),
+            App(bundle: "com.apple.FaceTime", name: "FaceTime"),
+        ]
+        let sections = MeetingAppRegistry.pickerSections(apps, bundleIdentifier: \.bundle, name: \.name, isBackgroundItem: \.background)
+        XCTAssertEqual(
+            sections.usual.map(\.name),
+            ["zoom.us", "Microsoft Teams", "FaceTime", "Slack", "Google Meet", "Google Chrome", "Safari"]
+        )
+        XCTAssertEqual(sections.others.map(\.name), ["Finder", "Music", "AirPlayUIAgent", "Control Center"])
+        XCTAssertEqual(sections.usual.count + sections.others.count, apps.count, "nothing is dropped from the list")
+    }
+
+    func testAppsThatOnlyShapeThePickerAreNeverDetected() {
+        for bundle in MeetingAppRegistry.otherCallAppBundleIdentifiers {
+            XCTAssertNil(MeetingAppRegistry.tier(forBundleIdentifier: bundle), bundle)
+            XCTAssertNotNil(MeetingAppRegistry.pickerRank(forBundleIdentifier: bundle), bundle)
+        }
+        XCTAssertNil(MeetingAppRegistry.pickerRank(forBundleIdentifier: "com.apple.Music"))
+    }
+
     func testRegistryTierLookup() {
         XCTAssertEqual(MeetingAppRegistry.tier(forBundleIdentifier: "us.zoom.xos"), .nativeTier1)
         XCTAssertEqual(MeetingAppRegistry.tier(forBundleIdentifier: "com.google.Chrome"), .browserTier2)
