@@ -17,6 +17,7 @@ struct MeetingSummaryView: View {
     /// The on-device summary model, read when the providers are; nil in builds without one.
     @State private var onDeviceModel: PrivateAIRegisteredModel?
     @State private var confirmDeletion = false
+    @State private var showModelPicker = false
 
     private var refreshID: String {
         // A prompt edit re-checks the saved custom summary, so an older result never stays on screen.
@@ -32,10 +33,6 @@ struct MeetingSummaryView: View {
 
     private var providerKey: String {
         ModelRepository.shared.providerKey(for: self.providerID)
-    }
-
-    private var models: [CommandModelOption] {
-        self.catalog.filter { ModelRepository.shared.providerKey(for: $0.providerID) == self.providerKey }
     }
 
     private var providers: [CommandModelOption] {
@@ -62,12 +59,6 @@ struct MeetingSummaryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.lg) {
             self.configurationPanel
-            if let error = self.controller.error ?? self.readinessIssue, self.hasChoices {
-                Text(error)
-                    .font(self.theme.typography.bodySmall)
-                    .foregroundStyle(self.theme.palette.warning)
-                    .textSelection(.enabled)
-            }
             if !self.controller.output.isEmpty {
                 self.summaryDocument
             }
@@ -117,19 +108,21 @@ struct MeetingSummaryView: View {
             } else if !self.hasChoices {
                 self.setupPrompt
             } else {
+                // Two equal columns; stacked when the window is narrow.
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: self.theme.metrics.spacing.md) {
-                        self.providerPicker.frame(minWidth: 180)
-                        self.modelOrThinking.frame(minWidth: 170)
-                        self.kindPicker.frame(minWidth: 160)
+                        self.modelChooser.frame(minWidth: 240)
+                        self.kindPicker.frame(minWidth: 200)
                     }
                     VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
-                        self.providerPicker
-                        self.modelOrThinking
+                        self.modelChooser
                         self.kindPicker
                     }
                 }
                 .disabled(self.controller.busy)
+                if self.usesOnDevice {
+                    self.thinkingRow.disabled(self.controller.busy)
+                }
                 if self.kind == .custom {
                     self.customPromptEditor
                 }
@@ -138,6 +131,13 @@ struct MeetingSummaryView: View {
                     Text(PrivateAIModelDownloadProgressText.detailText(for: self.controller.progress))
                         .font(self.theme.typography.caption)
                         .foregroundStyle(self.theme.palette.secondaryText)
+                }
+                if let error = self.controller.error ?? self.readinessIssue {
+                    Text(error)
+                        .font(self.theme.typography.bodySmall)
+                        .foregroundStyle(self.theme.palette.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
                 }
                 if self.session == nil {
                     Text("Open a completed meeting to summarize its transcript.")
@@ -174,83 +174,101 @@ struct MeetingSummaryView: View {
         return "Transcript sent to \(route.providerName) (\(host)) · Audio stays on your Mac"
     }
 
-    private var providerPicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Summarize with").font(self.theme.typography.caption)
-            Picker("Summarize with", selection: Binding(
-                get: { self.providerID },
-                set: { self.selectProvider($0) }
-            )) {
-                ForEach(self.providers) { provider in Text(provider.providerName).tag(provider.providerID) }
-                if self.onDeviceModel != nil {
-                    Text(MeetingSummaryOnDevice.providerName).tag(MeetingSummaryOnDevice.providerID)
-                }
-                if !self.usesOnDevice, !self.providers.contains(where: { $0.providerID == self.providerID }) {
-                    Text(self.providerID.isEmpty ? "Choose provider" : "Unavailable provider").tag(self.providerID)
-                }
-            }
-            .labelsHidden().pickerStyle(.menu).fluidDropdownStyle()
-            .frame(maxWidth: .infinity, alignment: .leading)
+    /// Every model a summary can use: the one on this Mac first, then each verified provider's.
+    private var modelOptions: [CommandModelOption] {
+        guard let onDeviceModel else { return self.catalog }
+        // The model's own name stands in for its ID, which is not meant to be read.
+        return [CommandModelOption(
+            providerID: MeetingSummaryOnDevice.providerID,
+            providerName: MeetingSummaryOnDevice.providerName,
+            modelID: onDeviceModel.displayName,
+            displayName: onDeviceModel.displayName
+        )] + self.catalog
+    }
+
+    private var selectedOption: CommandModelOption? {
+        self.modelOptions.first {
+            self.usesOnDevice
+                ? $0.providerID == MeetingSummaryOnDevice.providerID
+                : ModelRepository.shared.providerKey(for: $0.providerID) == self.providerKey && $0.modelID == self.modelID
         }
     }
 
-    /// A cloud provider offers its models; the on-device model offers how carefully it works.
-    @ViewBuilder
-    private var modelOrThinking: some View {
-        if self.usesOnDevice {
-            self.thinkingControl
-        } else {
-            self.modelPicker
-        }
-    }
-
-    private var thinkingControl: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Think first").font(self.theme.typography.caption)
-            HStack(spacing: self.theme.metrics.spacing.sm) {
-                Toggle("Think first", isOn: self.$preferences.thinksFirst)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .accessibilityLabel("Think before summarizing")
-                Text(self.preferences.thinksFirst ? "More careful, slower" : "Faster")
-                    .font(self.theme.typography.bodySmall)
-                    .foregroundStyle(self.theme.palette.secondaryText)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .help("The model reasons about the transcript before it writes the summary.")
-        }
-    }
-
-    private var downloadSize: String? {
-        self.onDeviceModel?.artifact.byteCount.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
-    }
-
-    private var modelPicker: some View {
+    /// One searchable list across providers, the same chooser Command Mode uses.
+    private var modelChooser: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Model").font(self.theme.typography.caption)
-            Picker("Summary model", selection: Binding(
-                get: { self.modelID },
-                set: { self.preferences.selection.modelsByProvider[self.providerKey] = $0 }
-            )) {
-                ForEach(self.models) { model in Text(model.displayName).tag(model.modelID) }
-                if !self.models.contains(where: { $0.modelID == self.modelID }) {
-                    Text(self.modelID.isEmpty ? "Choose model" : self.modelID).tag(self.modelID)
+            Button {
+                self.showModelPicker.toggle()
+            } label: {
+                HStack(spacing: self.theme.metrics.spacing.sm) {
+                    if let option = self.selectedOption {
+                        Text(option.displayName).lineLimit(1).truncationMode(.middle)
+                        Text(option.providerName)
+                            .foregroundStyle(self.theme.palette.secondaryText)
+                            .lineLimit(1)
+                    } else {
+                        Text("Choose model").foregroundStyle(self.theme.palette.secondaryText)
+                    }
+                    Spacer(minLength: 0)
+                    FluidDropdownChevron()
                 }
+                .font(self.theme.typography.bodySmall)
+                .foregroundStyle(self.theme.palette.primaryText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fluidDropdownSurface()
             }
-            .labelsHidden().pickerStyle(.menu).fluidDropdownStyle()
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.plain)
+            .help("Search models on this Mac and from verified providers")
+            .accessibilityLabel("Summary model")
+            .accessibilityValue(self.selectedOption.map { "\($0.displayName), \($0.providerName)" } ?? "None")
+            .popover(isPresented: self.$showModelPicker, arrowEdge: .top) {
+                CommandModelPicker(
+                    options: self.modelOptions,
+                    selectedProviderID: self.selectedOption?.providerID ?? "",
+                    selectedModelID: self.selectedOption?.modelID ?? "",
+                    onSelect: { option in
+                        self.selectModel(option)
+                        self.showModelPicker = false
+                    },
+                    onDismiss: { self.showModelPicker = false }
+                )
+            }
         }
     }
 
     private var kindPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Summary type").font(self.theme.typography.caption)
-            Picker("Summary type", selection: self.$kind) {
+            FluidDropdownPicker("Summary type", selectedTitle: self.kind.title, selection: self.$kind) {
                 ForEach(MeetingSummaryKind.allCases) { kind in Text(kind.title).tag(kind) }
             }
-            .labelsHidden().pickerStyle(.menu).fluidDropdownStyle()
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .fluidDropdownStyle(fillsWidth: true)
         }
+    }
+
+    /// A setting of the model on this Mac, laid out like the rows in Recording settings.
+    private var thinkingRow: some View {
+        HStack(alignment: .center, spacing: self.theme.metrics.spacing.lg) {
+            VStack(alignment: .leading, spacing: self.theme.metrics.spacing.xs) {
+                Text("Think first").font(self.theme.typography.bodySmallStrong)
+                Text("The model reasons about the transcript before it writes. More careful, a little slower.")
+                    .font(self.theme.typography.caption)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle("Think first", isOn: self.$preferences.thinksFirst)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .accessibilityLabel("Think before summarizing")
+        }
+    }
+
+    private var downloadSize: String? {
+        self.onDeviceModel?.artifact.byteCount.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
     }
 
     private var customPromptEditor: some View {
@@ -383,6 +401,17 @@ struct MeetingSummaryView: View {
         .padding(self.theme.metrics.spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(self.theme.palette.primaryText.opacity(0.1)))
+    }
+
+    private func selectModel(_ option: CommandModelOption) {
+        guard option.providerID != MeetingSummaryOnDevice.providerID else {
+            self.selectProvider(option.providerID)
+            return
+        }
+        var selection = self.preferences.selection
+        selection.providerID = option.providerID
+        selection.modelsByProvider[ModelRepository.shared.providerKey(for: option.providerID)] = option.modelID
+        self.preferences.selection = selection
     }
 
     private func selectProvider(_ providerID: String) {
