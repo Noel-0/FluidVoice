@@ -340,4 +340,21 @@ final class MeetingSummaryActivityTests: XCTestCase {
         XCTAssertEqual(activity.handbacks, 0)
         XCTAssertNotNil(gate.beginProcessing())
     }
+
+    func testALargeSummaryModelComesWithAWarningOnASixteenGBMacOnly() {
+        // The 9B recommends 24 GB.
+        XCTAssertEqual(
+            MeetingSummaryOnDevice.memoryWarning(recommendedMemoryGB: 24, memoryGB: 16),
+            "Recommended only for Macs with more than 16 GB of memory."
+        )
+        XCTAssertNil(MeetingSummaryOnDevice.memoryWarning(recommendedMemoryGB: 24, memoryGB: 18))
+        XCTAssertNil(MeetingSummaryOnDevice.memoryWarning(recommendedMemoryGB: 24, memoryGB: 64))
+    }
+
+    func testASmallSummaryModelNeverWarns() {
+        for memoryGB in [8, 16, 24] {
+            XCTAssertNil(MeetingSummaryOnDevice.memoryWarning(recommendedMemoryGB: 8, memoryGB: memoryGB))
+            XCTAssertNil(MeetingSummaryOnDevice.memoryWarning(recommendedMemoryGB: nil, memoryGB: memoryGB))
+        }
+    }
 }

@@ -19,6 +19,19 @@ nonisolated enum MeetingSummaryOnDevice {
 
     /// The on-device model reads the whole transcript in one request.
     static let maximumTranscriptBytes = 96_000
+
+    /// A model that recommends more memory than this is a large one. The provider does not offer
+    /// it on a Mac with less than this, and here it comes with a warning on a Mac with exactly this much.
+    static let comfortableMemoryGB = 16
+
+    static var thisMacMemoryGB: Int {
+        Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824).rounded())
+    }
+
+    static func memoryWarning(recommendedMemoryGB: Int?, memoryGB: Int) -> String? {
+        guard (recommendedMemoryGB ?? 0) > self.comfortableMemoryGB, memoryGB <= self.comfortableMemoryGB else { return nil }
+        return "Recommended only for Macs with more than \(self.comfortableMemoryGB) GB of memory."
+    }
 }
 
 @MainActor

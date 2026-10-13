@@ -236,7 +236,20 @@ struct MeetingSummaryView: View {
                     onDismiss: { self.showModelPicker = false }
                 )
             }
+            if self.usesOnDevice, let memoryWarning = self.memoryWarning {
+                Label(memoryWarning, systemImage: "exclamationmark.triangle")
+                    .font(self.theme.typography.caption)
+                    .foregroundStyle(self.theme.palette.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    private var memoryWarning: String? {
+        MeetingSummaryOnDevice.memoryWarning(
+            recommendedMemoryGB: self.onDeviceModel?.recommendedMemoryGB,
+            memoryGB: MeetingSummaryOnDevice.thisMacMemoryGB
+        )
     }
 
     private var kindPicker: some View {
