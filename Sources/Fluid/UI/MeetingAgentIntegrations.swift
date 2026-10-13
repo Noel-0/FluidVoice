@@ -229,7 +229,9 @@ struct MeetingAgentIntegrations: View {
         switch self.model.check {
         case let .working(meetings):
             self.statusLabel(
-                meetings == 1 ? "Working. Your agents can read 1 meeting." : "Working. Your agents can read \(meetings) meetings.",
+                meetings == 1
+                    ? "Working. Your agents can read 1 meeting. Ask about it in a new session."
+                    : "Working. Your agents can read \(meetings) meetings. Ask about one in a new session.",
                 symbol: "checkmark.circle.fill",
                 color: Color.fluidGreen
             )
@@ -391,8 +393,8 @@ struct MeetingAgentIntegrations: View {
         case .notInstalled:
             return notice == .removed ? "Removed just now." : "Adds a skill so \(agent.displayName) can read your meetings."
         case .installed:
-            let lead = notice == .added ? "Added just now" : notice == .updated ? "Updated just now" : "Added"
-            return "\(lead) in \(place). Start a new session and ask about a meeting."
+            let lead = notice == .added ? "Added just now in" : notice == .updated ? "Updated just now in" : "In"
+            return "\(lead) \(place)"
         case .needsUpdate: return "This skill is from an older or moved copy of FluidVoice."
         case .foreign: return "Another \(FluidServeSkillInstaller.skillName) skill is already in \(place). FluidVoice will not replace it."
         }
