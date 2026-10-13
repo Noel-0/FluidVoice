@@ -148,6 +148,34 @@ private final class DetectorHarness {
         return self.prompts.last?.episodeID
     }
 
+    /// A Google Meet call in Chrome, confirmed from the front tab.
+    @discardableResult
+    func confirmChromeMeet(pid: Int32 = 8) -> UUID? {
+        self.workspace.frontmostProcessID = pid
+        self.detector.handleBackfill([.init(kind: .launched, bundleIdentifier: "com.google.Chrome", processID: pid)])
+        self.detector.handleBrowserTabURL(.init(host: "meet.google.com", path: "/abc-defg-hij"), pid: pid, bundleIdentifier: "com.google.Chrome", at: self.clock.now())
+        self.detector.handleMicEdge(.init(isActive: true), at: self.clock.now())
+        return self.prompts.last?.episodeID
+    }
+
+    /// What the audio system reports for Chrome: its helper holds the microphone, or nothing does.
+    func pollChrome(microphoneInUse: Bool, pid: Int32 = 8, readable: Bool = true) async {
+        let chrome = MeetingProcessOwner(processID: pid, bundleIdentifier: "com.google.Chrome", bundlePath: "/Applications/Google Chrome.app")
+        let helper = AudioProcessDescriptor(
+            processID: 4242,
+            bundleIdentifier: "com.google.Chrome.helper",
+            executablePath: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
+            isInputRunning: microphoneInUse,
+            isOutputRunning: true
+        )
+        self.audioProcessActivity.snapshotOverride = AudioProcessActivitySnapshot(
+            processes: [helper],
+            owners: [chrome],
+            queryState: readable ? .valid : .unknown
+        )
+        await self.detector.pollAudioProcessActivity(at: self.clock.now())
+    }
+
     /// Teams keeps a window open all day, so only its audio says whether a call is on.
     @discardableResult
     func confirmTeams(pid: Int32 = 300) -> UUID? {
@@ -1471,6 +1499,117 @@ final class MeetingAutoDetectorTests: XCTestCase {
         controller.dismiss()
         XCTAssertEqual(dismissals, 1)
         XCTAssertFalse(controller.isPresented)
+    }
+
+    // MARK: - Web meetings end with the browser's microphone, not with the front tab
+
+    func testSwitchingTabsDuringAWebMeetingNeverAsks() async throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmChromeMeet())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        await h.pollChrome(microphoneInUse: true)
+
+        // The user reads a doc in another tab for ten minutes while the call goes on.
+        h.detector.handleBrowserTabURL(.init(host: "docs.google.com", path: "/document/d/1"), pid: 8, bundleIdentifier: "com.google.Chrome", at: h.clock.now())
+        for _ in 0..<10 {
+            h.advance(60)
+            await h.pollChrome(microphoneInUse: true)
+            h.detector.tick(at: h.clock.now())
+        }
+        XCTAssertEqual(h.nudges, 0)
+    }
+
+    func testAWebMeetingAsksOnceTheBrowserLetsGoOfTheMicrophone() async throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmChromeMeet())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        await h.pollChrome(microphoneInUse: true)
+
+        // Left the call. The Meet tab still shows the same address, so the tab says nothing.
+        await h.pollChrome(microphoneInUse: false)
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds - 2)
+        await h.pollChrome(microphoneInUse: false)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0)
+
+        h.advance(4)
+        await h.pollChrome(microphoneInUse: false)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        // Rejoined: the question goes away.
+        await h.pollChrome(microphoneInUse: true)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 1)
+    }
+
+    func testABrowserWhoseMicrophoneWeNeverSawNeverAsks() async throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmChromeMeet())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+
+        // Safari records through a system process we cannot tie to it, so its microphone always reads as off.
+        h.detector.handleBrowserTabURL(nil, pid: 8, bundleIdentifier: "com.google.Chrome", at: h.clock.now())
+        for _ in 0..<5 {
+            h.advance(60)
+            await h.pollChrome(microphoneInUse: false)
+            h.detector.tick(at: h.clock.now())
+        }
+        XCTAssertEqual(h.nudges, 0)
+    }
+
+    func testAnUnreadableMicrophoneQueryNeitherAsksNorTakesTheQuestionBackForAWebMeeting() async throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmChromeMeet())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        await h.pollChrome(microphoneInUse: true)
+
+        for _ in 0..<5 {
+            h.advance(30)
+            await h.pollChrome(microphoneInUse: false, readable: false)
+            h.detector.tick(at: h.clock.now())
+        }
+        XCTAssertEqual(h.nudges, 0, "not readable is not a release")
+
+        await h.pollChrome(microphoneInUse: false)
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        await h.pollChrome(microphoneInUse: false)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        await h.pollChrome(microphoneInUse: false, readable: false)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0)
+    }
+
+    func testQuittingTheBrowserStillAsks() async throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmChromeMeet())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: "com.google.Chrome", processID: 8), at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+    }
+
+    func testBrowserMicrophoneIsReadOnlyWhenAskedForAndNeverCountsAsANativeMeeting() {
+        let chrome = MeetingProcessOwner(processID: 8, bundleIdentifier: "com.google.Chrome", bundlePath: "/Applications/Google Chrome.app")
+        let zoom = MeetingProcessOwner(processID: 100, bundleIdentifier: "us.zoom.xos", bundlePath: "/Applications/zoom.us.app")
+        let helper = AudioProcessDescriptor(
+            processID: 4242,
+            bundleIdentifier: nil,
+            executablePath: "/Applications/Google Chrome.app/Contents/Frameworks/Helpers/Google Chrome Helper",
+            isInputRunning: true,
+            isOutputRunning: true
+        )
+        let snapshot = AudioProcessActivitySnapshot(processes: [helper], owners: [chrome, zoom], queryState: .valid)
+        XCTAssertEqual(MeetingAudioProcessResolver.activeOwnerInputByPID(snapshot: snapshot), [:])
+        XCTAssertEqual(
+            MeetingAudioProcessResolver.activeOwnerInputByPID(snapshot: snapshot, owning: MeetingAppRegistry.isBrowserApp(bundleIdentifier:)),
+            [8: true]
+        )
     }
 
     func testNothingIsAskedOnceOurRecordingHasStopped() throws {

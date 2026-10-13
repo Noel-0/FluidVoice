@@ -110,10 +110,14 @@ final class MeetingAutoDetector {
     /// retired by rules written for the next start prompt and can go while we still record.
     private struct WatchedRecording {
         var pid: Int32
+        var tier: MeetingDetectionTier
         var incarnation: UInt64?
         /// The app's own audio was seen running during this recording, so seeing it stop means something.
         var sawProcessAudio = false
         var appGoneAt: Date?
+        /// Browser meetings only: when the browser was first seen without the microphone.
+        var browserMicReleasedAt: Date?
+        var browserMicUnknown = false
         var asked = false
         /// The user waved the question away. It stays away for the rest of this recording.
         var silenced = false
@@ -356,6 +360,7 @@ final class MeetingAutoDetector {
         guard !Task.isCancelled,
               expectedRunGeneration.map({ self.runGeneration == $0 && self.pollTask != nil && self.isNativeDetectionEnabled() }) ?? true
         else { return }
+        self.noteWatchedBrowserMicrophone(snapshot, at: now)
         guard let activeInputByPID = MeetingAudioProcessResolver.activeOwnerInputByPID(snapshot: snapshot) else {
             if !self.audioQueryUnknown {
                 DebugLogger.shared.warning("audio-query-unavailable native confirmation paused", source: "MeetingAutoDetector")
@@ -389,6 +394,30 @@ final class MeetingAutoDetector {
             }
             self.handleAudioProcessActivity(isActive, pid: pid, at: now)
         }
+    }
+
+    /// A web meeting is over when the browser lets go of the microphone, whichever tab is in front.
+    /// Only a browser we saw holding the microphone during this recording can be read this way.
+    private func noteWatchedBrowserMicrophone(_ snapshot: AudioProcessActivitySnapshot, at now: Date) {
+        guard var watched = self.watchedRecording, watched.tier == .browserTier2 else { return }
+        let inputByPID = MeetingAudioProcessResolver.activeOwnerInputByPID(
+            snapshot: snapshot,
+            owning: MeetingAppRegistry.isBrowserApp(bundleIdentifier:)
+        )
+        if let inputByPID {
+            watched.browserMicUnknown = false
+            if inputByPID[watched.pid] == true {
+                watched.sawProcessAudio = true
+                watched.browserMicReleasedAt = nil
+            } else if watched.sawProcessAudio, watched.browserMicReleasedAt == nil {
+                watched.browserMicReleasedAt = now
+            }
+        } else {
+            // Not readable is not a release. The quiet has to be seen again from the start.
+            watched.browserMicUnknown = true
+            watched.browserMicReleasedAt = nil
+        }
+        self.watchedRecording = watched
     }
 
     func handleAudioProcessActivity(_ isActive: Bool, pid: Int32, at now: Date) {
@@ -668,6 +697,7 @@ final class MeetingAutoDetector {
         let record = self.records[episode.pid]
         self.watchedRecording = WatchedRecording(
             pid: episode.pid,
+            tier: episode.tier,
             incarnation: record?.incarnation,
             sawProcessAudio: record?.processAudioWasActive == true
         )
@@ -796,17 +826,28 @@ final class MeetingAutoDetector {
     private func evaluateEndOfMeeting(at now: Date) {
         guard var watched = self.watchedRecording, !watched.silenced else { return }
         let askAt: Date?
+        var audioUnknown = false
         if let record = self.records[watched.pid], watched.incarnation == nil || record.incarnation == watched.incarnation {
             watched.appGoneAt = nil
             var moments: [Date] = []
-            if record.windowEvidenceAt == nil, let windowLostAt = record.windowLostAt {
-                moments.append(windowLostAt.addingTimeInterval(Self.micReleaseEpisodeEndSeconds))
-            }
-            // An unknown audio query is not a release, and an app whose audio we never saw running
-            // gives no release to read. Teams and Webex keep a window open all day, so for them
-            // this is the only sign the call is over.
-            if watched.sawProcessAudio, !self.audioQueryUnknown, let inactiveAt = record.processAudioInactiveAt {
-                moments.append(inactiveAt.addingTimeInterval(Self.endSignalGraceSeconds))
+            if record.tier == .browserTier2 {
+                // We only ever read the front tab, so a meeting tab that is no longer in front says
+                // nothing: the call may be running behind another tab. The microphone decides.
+                audioUnknown = watched.browserMicUnknown
+                if let releasedAt = watched.browserMicReleasedAt {
+                    moments.append(releasedAt.addingTimeInterval(Self.endSignalGraceSeconds))
+                }
+            } else {
+                audioUnknown = self.audioQueryUnknown
+                if record.windowEvidenceAt == nil, let windowLostAt = record.windowLostAt {
+                    moments.append(windowLostAt.addingTimeInterval(Self.micReleaseEpisodeEndSeconds))
+                }
+                // An unknown audio query is not a release, and an app whose audio we never saw running
+                // gives no release to read. Teams and Webex keep a window open all day, so for them
+                // this is the only sign the call is over.
+                if watched.sawProcessAudio, !self.audioQueryUnknown, let inactiveAt = record.processAudioInactiveAt {
+                    moments.append(inactiveAt.addingTimeInterval(Self.endSignalGraceSeconds))
+                }
             }
             askAt = moments.min()
         } else {
@@ -819,7 +860,7 @@ final class MeetingAutoDetector {
         let shouldAsk = askAt.map { now >= $0 } == true && !stillTalking && !watched.asked
         // Every sign of the end is gone again: the call resumed. An audio query we cannot read is
         // not that, so it changes nothing. The question can then come back at the next real end.
-        let shouldWithdraw = askAt == nil && watched.asked && !(self.audioQueryUnknown && watched.sawProcessAudio)
+        let shouldWithdraw = askAt == nil && watched.asked && !(audioUnknown && watched.sawProcessAudio)
         if shouldAsk { watched.asked = true }
         if shouldWithdraw { watched.asked = false }
         self.watchedRecording = watched
