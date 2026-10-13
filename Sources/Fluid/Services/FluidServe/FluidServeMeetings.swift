@@ -95,7 +95,7 @@ nonisolated enum FluidServeMeetings {
         var errorDescription: String? {
             switch self {
             case .accessOff:
-                return "Meeting access is off. Turn it on in FluidVoice: Settings > Experimental > Fluid Server."
+                return "FluidVoice is not sharing meetings with any agent yet. In FluidVoice, open FluidMeet settings > Integrations and add your agent."
             case .noMeetings:
                 return "No finished meetings with a transcript were found."
             case let .notFound(reference):

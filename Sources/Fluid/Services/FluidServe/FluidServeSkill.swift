@@ -4,7 +4,13 @@ import Foundation
 /// what the app's buttons install, for coding agents the app has no button for.
 nonisolated enum FluidServeSkill {
     static let name = "fluidmeet"
-    static let marker = "<!-- Installed by FluidVoice. Remove it in FluidVoice: Settings > Experimental > Fluid Server. -->"
+    static let marker = "<!-- Installed by FluidVoice. Remove it in FluidVoice: FluidMeet settings > Integrations. -->"
+    /// Markers written by earlier builds. A file carrying one is still ours, just out of date.
+    static let earlierMarkers = ["<!-- Installed by FluidVoice. Remove it in FluidVoice: Settings > Experimental > Fluid Server. -->"]
+
+    static func isOurs(_ text: String) -> Bool {
+        ([self.marker] + self.earlierMarkers).contains { text.contains($0) }
+    }
 
     /// The path as one shell word. Single quotes keep spaces, `$`, backticks and double quotes
     /// literal, so an oddly named app folder cannot change what a pasted command runs.
@@ -67,8 +73,8 @@ nonisolated enum FluidServeSkill {
 
         ## If it does not work
 
-        - "Meeting access is off": ask the user to turn on Fluid Server in FluidVoice (Settings > Experimental). Do not look for another way to read the meetings.
-        - The command is not found: FluidVoice was moved or removed. Ask the user to open FluidVoice and press Update next to this skill in Settings > Experimental.
+        - It says meetings are not shared yet: ask the user to open FluidVoice, go to FluidMeet settings > Integrations, and add this agent there. Do not look for another way to read the meetings.
+        - The command is not found: FluidVoice was moved or removed. Ask the user to open FluidMeet settings > Integrations in FluidVoice and press Update skill.
         """ + "\n"
     }
 }

@@ -91,13 +91,13 @@ nonisolated enum FluidServeSkillInstaller {
         guard let existing = self.text(at: self.skillFile(for: agent, home: home), fileManager: fileManager) else {
             return .notInstalled
         }
-        guard existing.contains(self.marker) else { return .foreign }
+        guard FluidServeSkill.isOurs(existing) else { return .foreign }
         return existing == self.skillDocument(toolPath: toolPath) ? .installed : .needsUpdate
     }
 
     static func install(for agent: Agent, toolPath: String, home: URL, fileManager: FileManager = .default) throws {
         let file = self.skillFile(for: agent, home: home)
-        if let existing = self.text(at: file, fileManager: fileManager), !existing.contains(self.marker) {
+        if let existing = self.text(at: file, fileManager: fileManager), !FluidServeSkill.isOurs(existing) {
             throw InstallError.foreignSkill(file.path)
         }
         try fileManager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -107,7 +107,7 @@ nonisolated enum FluidServeSkillInstaller {
     static func remove(for agent: Agent, home: URL, fileManager: FileManager = .default) throws {
         let file = self.skillFile(for: agent, home: home)
         guard let existing = self.text(at: file, fileManager: fileManager) else { return }
-        guard existing.contains(self.marker) else {
+        guard FluidServeSkill.isOurs(existing) else {
             throw InstallError.foreignSkill(file.path)
         }
         try fileManager.removeItem(at: file)

@@ -6,6 +6,8 @@ import XCTest
 final class FluidServeTests: XCTestCase {
     private var root: URL!
     private var home: URL!
+    /// Stands in for the app's "meetings are shared" setting, so tests never touch the real one.
+    private let sharing = SharingBox()
 
     override func setUpWithError() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("FluidServeTests-\(UUID().uuidString)", isDirectory: true)
@@ -13,6 +15,7 @@ final class FluidServeTests: XCTestCase {
         self.home = base.appendingPathComponent("home", isDirectory: true)
         try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.home, withIntermediateDirectories: true)
+        self.sharing.value = false
     }
 
     override func tearDownWithError() throws {
@@ -259,6 +262,18 @@ final class FluidServeTests: XCTestCase {
         XCTAssertNoThrow(try FluidServeSkillInstaller.remove(for: agent, home: self.home), "Removing twice is harmless")
     }
 
+    func testASkillInstalledByAnEarlierBuildIsStillOursAndJustNeedsUpdating() throws {
+        let file = FluidServeSkillInstaller.skillFile(for: .claudeCode, home: self.home)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let earlier = "---\nname: fluidmeet\n---\n\(FluidServeSkill.earlierMarkers[0])\n\nOld text.\n"
+        try Data(earlier.utf8).write(to: file)
+
+        XCTAssertEqual(FluidServeSkillInstaller.status(for: .claudeCode, toolPath: "/x/fv-serve", home: self.home), .needsUpdate)
+        try FluidServeSkillInstaller.install(for: .claudeCode, toolPath: "/x/fv-serve", home: self.home)
+        XCTAssertEqual(FluidServeSkillInstaller.status(for: .claudeCode, toolPath: "/x/fv-serve", home: self.home), .installed)
+        XCTAssertTrue(try String(contentsOf: file, encoding: .utf8).contains(FluidServeSkill.marker))
+    }
+
     func testSomeoneElsesSkillOfTheSameNameIsLeftAlone() throws {
         let agent = FluidServeSkillInstaller.Agent.codex
         let file = FluidServeSkillInstaller.skillFile(for: agent, home: self.home)
@@ -291,7 +306,7 @@ final class FluidServeTests: XCTestCase {
     func testCopyInstructionsGivesAnAgentTheCommandAndSaysCopiedOnlyIfItWas() {
         let tool = URL(fileURLWithPath: "/Applications/Fluid Voice.app/Contents/Helpers/fv-serve")
         var clipboard: String?
-        let model = FluidServeSettingsModel(home: self.home, toolURL: { tool }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: {
+        let model = self.model(tool: tool, check: { _ in .working(meetings: 0) }, copy: {
             clipboard = $0
             return true
         })
@@ -299,16 +314,19 @@ final class FluidServeTests: XCTestCase {
         model.copyAgentInstructions()
         XCTAssertTrue(model.copiedAgentInstructions)
         XCTAssertNil(model.issue)
+        XCTAssertTrue(self.sharing.value, "Copying instructions for another agent starts sharing too")
         XCTAssertEqual(clipboard, FluidServeSkill.agentInstructions(toolPath: tool.path))
         XCTAssertEqual(clipboard?.contains("'/Applications/Fluid Voice.app/Contents/Helpers/fv-serve' skill"), true, "The path is quoted, so a space in it still works")
         XCTAssertEqual(clipboard?.contains("fluidmeet"), true)
 
-        let refused = FluidServeSettingsModel(home: self.home, toolURL: { tool }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: { _ in false })
+        let refused = self.model(tool: tool, check: { _ in .working(meetings: 0) }, copy: { _ in false })
+        self.sharing.value = false
         refused.copyAgentInstructions()
         XCTAssertFalse(refused.copiedAgentInstructions)
         XCTAssertNotNil(refused.issue)
+        XCTAssertFalse(self.sharing.value, "A failed copy must not start sharing")
 
-        let missing = FluidServeSettingsModel(home: self.home, toolURL: { nil }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: { _ in true })
+        let missing = self.model(tool: nil, check: { _ in .working(meetings: 0) }, copy: { _ in true })
         missing.copyAgentInstructions()
         XCTAssertFalse(missing.copiedAgentInstructions, "Nothing to copy when this build has no fv-serve")
     }
@@ -329,12 +347,12 @@ final class FluidServeTests: XCTestCase {
         let theirs = FluidServeSkillInstaller.skillFile(for: .codex, home: self.home)
         try FileManager.default.createDirectory(at: theirs.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("---\nname: fluidmeet\n---\nHand written.\n".utf8).write(to: theirs)
-        let model = FluidServeSettingsModel(home: self.home, toolURL: { URL(fileURLWithPath: "/x/fv-serve") }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: { _ in true })
-        await model.refresh(accessEnabled: true)
+        let model = self.model(tool: URL(fileURLWithPath: "/x/fv-serve"), check: { _ in .working(meetings: 0) }, copy: { _ in true })
+        await model.refresh()
 
-        await model.install(.codex, accessEnabled: true)
+        await model.install(.codex)
         let problem = try XCTUnwrap(model.issue)
-        await model.install(.claudeCode, accessEnabled: true)
+        await model.install(.claudeCode)
         XCTAssertEqual(model.notices[.claudeCode], .added)
         XCTAssertEqual(model.issue, problem, "Claude Code succeeding says nothing about Codex")
         model.copyAgentInstructions()
@@ -358,31 +376,53 @@ final class FluidServeTests: XCTestCase {
     func testPressingAddConfirmsOnlyOnceTheFileIsThereAndRemoveSaysRemoved() async throws {
         try FileManager.default.createDirectory(at: self.home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
         let tool = URL(fileURLWithPath: "/Applications/FluidVoice.app/Contents/Helpers/fv-serve")
-        let model = FluidServeSettingsModel(home: self.home, toolURL: { tool }, selfCheck: { _ in .working(meetings: 3) })
+        let model = self.model(tool: tool, check: { _ in .working(meetings: 3) })
         let file = FluidServeSkillInstaller.skillFile(for: .claudeCode, home: self.home)
 
-        await model.refresh(accessEnabled: true)
+        await model.refresh()
         XCTAssertEqual(model.statuses[.claudeCode], .notInstalled)
         XCTAssertEqual(model.statuses[.codex], .agentNotFound)
-        XCTAssertEqual(model.check, .working(meetings: 3))
+        XCTAssertNil(model.check, "Nothing is shared, so the command is not even run")
+        XCTAssertFalse(self.sharing.value)
         XCTAssertNil(model.notices[.claudeCode])
 
-        await model.install(.claudeCode, accessEnabled: true)
+        await model.install(.claudeCode)
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
         XCTAssertEqual(model.statuses[.claudeCode], .installed)
         XCTAssertEqual(model.notices[.claudeCode], .added)
         XCTAssertNil(model.issue)
         XCTAssertNil(model.notices[.codex], "Adding one tool's skill says nothing about the other")
-        let added = FluidServeSettingsSection.detail(for: .installed, notice: .added, agent: .claudeCode, folder: model.skillFolder(for: .claudeCode))
-        XCTAssertTrue(added.hasPrefix("Added just now at "))
+        XCTAssertTrue(self.sharing.value, "Adding an agent is what starts sharing; there is no separate switch")
+        XCTAssertEqual(model.check, .working(meetings: 3))
+        let added = MeetingAgentIntegrations.detail(for: .installed, notice: .added, agent: .claudeCode, folder: model.skillFolder(for: .claudeCode))
+        XCTAssertTrue(added.hasPrefix("Added just now in "))
         XCTAssertTrue(added.contains("/.claude/skills/fluidmeet"))
 
-        await model.remove(.claudeCode, accessEnabled: true)
+        await model.remove(.claudeCode)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         XCTAssertEqual(model.statuses[.claudeCode], .notInstalled)
         XCTAssertEqual(model.notices[.claudeCode], .removed)
-        let removed = FluidServeSettingsSection.detail(for: .notInstalled, notice: .removed, agent: .claudeCode, folder: model.skillFolder(for: .claudeCode))
+        XCTAssertFalse(self.sharing.value, "Removing the last skill stops sharing")
+        XCTAssertNil(model.check)
+        let removed = MeetingAgentIntegrations.detail(for: .notInstalled, notice: .removed, agent: .claudeCode, folder: model.skillFolder(for: .claudeCode))
         XCTAssertTrue(removed.hasPrefix("Removed just now."))
+    }
+
+    func testSharingStaysOnWhileAnyAgentStillHasTheSkill() async throws {
+        for folder in [".claude", ".codex"] {
+            try FileManager.default.createDirectory(at: self.home.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        let model = self.model(tool: URL(fileURLWithPath: "/x/fv-serve"))
+        await model.install(.claudeCode)
+        await model.install(.codex)
+        XCTAssertTrue(self.sharing.value)
+
+        await model.remove(.claudeCode)
+        XCTAssertTrue(self.sharing.value, "Codex still has the skill")
+        XCTAssertEqual(model.statuses[.codex], .installed)
+
+        await model.remove(.codex)
+        XCTAssertFalse(self.sharing.value)
     }
 
     func testAnAddThatCannotHappenIsReportedAndNotConfirmed() async throws {
@@ -390,25 +430,26 @@ final class FluidServeTests: XCTestCase {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         let theirs = "---\nname: fluidmeet\ndescription: mine\n---\nHand written.\n"
         try Data(theirs.utf8).write(to: file)
-        let model = FluidServeSettingsModel(home: self.home, toolURL: { URL(fileURLWithPath: "/x/fv-serve") }, selfCheck: { _ in .working(meetings: 0) })
+        let model = self.model(tool: URL(fileURLWithPath: "/x/fv-serve"), check: { _ in .working(meetings: 0) })
 
-        await model.refresh(accessEnabled: true)
+        await model.refresh()
         XCTAssertEqual(model.statuses[.codex], .foreign)
-        await model.install(.codex, accessEnabled: true)
+        await model.install(.codex)
 
         XCTAssertEqual(model.statuses[.codex], .foreign)
         XCTAssertNil(model.notices[.codex])
         XCTAssertNotNil(model.issue)
+        XCTAssertFalse(self.sharing.value, "A failed add must not start sharing")
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), theirs)
     }
 
     func testASkillFromAMovedAppIsReportedAsUpdatedNotAdded() async throws {
         try FluidServeSkillInstaller.install(for: .claudeCode, toolPath: "/Old/FluidVoice.app/Contents/Helpers/fv-serve", home: self.home)
-        let model = FluidServeSettingsModel(home: self.home, toolURL: { URL(fileURLWithPath: "/New/FluidVoice.app/Contents/Helpers/fv-serve") }, selfCheck: { _ in .working(meetings: 1) })
+        let model = self.model(tool: URL(fileURLWithPath: "/New/FluidVoice.app/Contents/Helpers/fv-serve"), check: { _ in .working(meetings: 1) })
 
-        await model.refresh(accessEnabled: true)
+        await model.refresh()
         XCTAssertEqual(model.statuses[.claudeCode], .needsUpdate)
-        await model.install(.claudeCode, accessEnabled: true)
+        await model.install(.claudeCode)
 
         XCTAssertEqual(model.statuses[.claudeCode], .installed)
         XCTAssertEqual(model.notices[.claudeCode], .updated)
@@ -418,18 +459,19 @@ final class FluidServeTests: XCTestCase {
         try FileManager.default.createDirectory(at: self.home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
         let tool = URL(fileURLWithPath: "/Applications/FluidVoice.app/Contents/Helpers/fv-serve")
         let gate = FirstCallGate()
-        let model = FluidServeSettingsModel(home: self.home, toolURL: { tool }, selfCheck: { _ in
+        let model = self.model(tool: tool, check: { _ in
             gate.holdFirstCall()
             return .working(meetings: 2)
         })
 
         // The first refresh reads "not added", then waits inside the check.
-        let slow = Task { await model.refresh(accessEnabled: true) }
+        self.sharing.value = true
+        let slow = Task { await model.refresh() }
         while !gate.firstCallIsWaiting {
             try await Task.sleep(nanoseconds: 5_000_000)
         }
         // Meanwhile the skill is added and a second refresh completes.
-        await model.install(.claudeCode, accessEnabled: true)
+        await model.install(.claudeCode)
         XCTAssertEqual(model.statuses[.claudeCode], .installed)
         XCTAssertEqual(model.notices[.claudeCode], .added)
 
@@ -441,26 +483,27 @@ final class FluidServeTests: XCTestCase {
 
     func testTheCommandIsNotRunWhileAccessIsOff() async {
         let calls = CallCounter()
-        let model = FluidServeSettingsModel(home: self.home, toolURL: { URL(fileURLWithPath: "/x/fv-serve") }, selfCheck: { _ in
+        let model = self.model(tool: URL(fileURLWithPath: "/x/fv-serve"), check: { _ in
             calls.increment()
             return .working(meetings: 9)
         })
 
-        await model.refresh(accessEnabled: false)
+        await model.refresh()
         XCTAssertNil(model.check)
         XCTAssertEqual(calls.value, 0)
 
-        await model.refresh(accessEnabled: true)
+        self.sharing.value = true
+        await model.refresh()
         XCTAssertEqual(model.check, .working(meetings: 9))
         XCTAssertEqual(calls.value, 1, "One run per refresh; nothing polls")
     }
 
     func testEachStateHasItsOwnWordAndNeverReadsLikeAButton() {
         let statuses: [FluidServeSkillInstaller.Status?] = [nil, .agentNotFound, .notInstalled, .installed, .needsUpdate, .foreign]
-        let titles = statuses.map { FluidServeSettingsSection.state(for: $0).title }
+        let titles = statuses.map { MeetingAgentIntegrations.state(for: $0).title }
         XCTAssertEqual(Set(titles).count, titles.count)
-        XCTAssertEqual(FluidServeSettingsSection.state(for: .installed).title, "Skill added")
-        XCTAssertEqual(FluidServeSettingsSection.state(for: .notInstalled).title, "Not added")
+        XCTAssertEqual(MeetingAgentIntegrations.state(for: .installed).title, "Skill added")
+        XCTAssertEqual(MeetingAgentIntegrations.state(for: .notInstalled).title, "Not added")
         for title in titles {
             XCTAssertFalse(title.hasPrefix("Remove"), title)
             XCTAssertFalse(title.hasPrefix("Add "), title)
@@ -513,6 +556,26 @@ final class FluidServeTests: XCTestCase {
     }
 
     // MARK: - Fixtures
+
+    private final class SharingBox {
+        var value = false
+    }
+
+    private func model(
+        tool: URL?,
+        check: @escaping @Sendable (URL) -> FluidServeSelfCheck.Outcome = { _ in .working(meetings: 0) },
+        copy: @escaping (String) -> Bool = { _ in true }
+    ) -> FluidServeSettingsModel {
+        let sharing = self.sharing
+        return FluidServeSettingsModel(
+            home: self.home,
+            toolURL: { tool },
+            selfCheck: check,
+            copyToClipboard: copy,
+            isSharing: { sharing.value },
+            setSharing: { sharing.value = $0 }
+        )
+    }
 
     /// Holds the first caller until released; later callers pass straight through.
     private final class FirstCallGate: @unchecked Sendable {

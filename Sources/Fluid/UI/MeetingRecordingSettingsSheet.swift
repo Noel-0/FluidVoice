@@ -458,7 +458,9 @@ struct MeetingRecordingSettingsSheet: View {
 
     private var integrationSettings: some View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.xl) {
-            FluidManagementGroup(title: "Claude & ChatGPT MCP links") {
+            MeetingAgentIntegrations()
+
+            FluidManagementGroup(title: "Claude and ChatGPT apps") {
                 VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
                     self.integrationRow(name: "Claude", provider: "by Anthropic", assetName: "Provider_Anthropic")
                     Divider()
@@ -466,10 +468,13 @@ struct MeetingRecordingSettingsSheet: View {
                 }
             }
 
-            Label("MCP connections are coming in a future update. No meeting notes are shared with Claude or ChatGPT.", systemImage: "lock.fill")
-                .font(self.theme.typography.caption)
-                .foregroundStyle(self.theme.palette.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
+            Label(
+                "Coding agents are cloud tools: a meeting they read is sent to them. Nothing is shared until you add one, and it stops when you remove the skills.",
+                systemImage: "lock.fill"
+            )
+            .font(self.theme.typography.caption)
+            .foregroundStyle(self.theme.palette.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -494,11 +499,11 @@ struct MeetingRecordingSettingsSheet: View {
             Text("Coming soon")
                 .font(self.theme.typography.badge)
                 .foregroundStyle(self.theme.palette.secondaryText)
-            Toggle("Enable \(name) MCP link — coming soon", isOn: .constant(false))
+            Toggle("Connect \(name) — coming soon", isOn: .constant(false))
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .disabled(true)
-                .help("\(name) MCP links are coming soon.")
+                .help("A connection to the \(name) app is coming soon.")
         }
         .padding(.vertical, self.theme.metrics.spacing.sm)
     }
@@ -514,7 +519,8 @@ struct MeetingRecordingSettingsSheet: View {
                 HStack(spacing: self.theme.metrics.spacing.md) {
                     Spacer(minLength: self.theme.metrics.spacing.md)
                     Button(action: self.onCancel) {
-                        Text(self.isFirstSetup ? "Not now" : "Cancel").frame(minWidth: 72)
+                        // Nothing on Integrations waits for Save, so the button there only closes.
+                        Text(self.isFirstSetup ? "Not now" : self.selectedSection == .integrations ? "Close" : "Cancel").frame(minWidth: 72)
                     }
                     .meetingGlassAction()
                     .keyboardShortcut(.cancelAction)

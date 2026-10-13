@@ -1630,11 +1630,6 @@ struct SettingsView: View {
                             )
                         )
                         .settingsSearchTarget(.historyPerformance)
-
-                        Divider().padding(.vertical, 4)
-
-                        FluidServeSettingsSection()
-                            .settingsSearchTarget(.fluidServer)
                     }
                     .padding(16)
                 }

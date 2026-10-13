@@ -1,0 +1,400 @@
+import AppKit
+import Combine
+import SwiftUI
+
+/// Tracks which coding agents have the `fluidmeet` skill and whether the meeting reader answers.
+/// File checks, writes and the command run happen off the main thread, and only when the page
+/// appears or the user presses a button; nothing polls.
+///
+/// There is no separate switch. Meetings are shared from the moment an agent is added here, and
+/// stop being shared when the last skill is removed.
+@MainActor
+final class FluidServeSettingsModel: ObservableObject {
+    typealias Agent = FluidServeSkillInstaller.Agent
+    typealias Status = FluidServeSkillInstaller.Status
+
+    /// What the last button press did, shown under that row until the next press.
+    enum Notice: Equatable {
+        case added
+        case updated
+        case removed
+    }
+
+    @Published private(set) var statuses: [Agent: Status] = [:]
+    @Published private(set) var notices: [Agent: Notice] = [:]
+    @Published private(set) var toolIsBundled = true
+    /// Whether an app on this Mac opens `codex://` links, so the row can offer to start a chat.
+    @Published private(set) var codexAppIsInstalled = false
+    /// The answer from running the real command. Nil while nothing is shared or before the first run.
+    @Published private(set) var check: FluidServeSelfCheck.Outcome?
+    @Published private(set) var isChecking = false
+    @Published private(set) var issue: String?
+    /// Which row the current issue came from, so another row's success does not wipe it.
+    private var issueAgent: Agent?
+    /// True once the instructions for another agent are on the clipboard, so the row can say so.
+    @Published private(set) var copiedAgentInstructions = false
+
+    private let home: URL
+    private let toolURL: () -> URL?
+    private let selfCheck: @Sendable (URL) -> FluidServeSelfCheck.Outcome
+    private let copyToClipboard: (String) -> Bool
+    private let isSharing: () -> Bool
+    private let setSharing: (Bool) -> Void
+    /// Counts refreshes so a slow one that finishes late cannot overwrite a newer answer.
+    private var refreshGeneration = 0
+
+    init(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        toolURL: @escaping () -> URL? = { FluidServeSkillInstaller.bundledToolURL() },
+        selfCheck: @escaping @Sendable (URL) -> FluidServeSelfCheck.Outcome = { FluidServeSelfCheck.run(tool: $0) },
+        copyToClipboard: @escaping (String) -> Bool = { text in
+            NSPasteboard.general.clearContents()
+            return NSPasteboard.general.setString(text, forType: .string)
+        },
+        isSharing: @escaping () -> Bool = { SettingsStore.shared.fluidServeMeetingAccessEnabled },
+        setSharing: @escaping (Bool) -> Void = { SettingsStore.shared.fluidServeMeetingAccessEnabled = $0 }
+    ) {
+        self.home = home
+        self.toolURL = toolURL
+        self.selfCheck = selfCheck
+        self.copyToClipboard = copyToClipboard
+        self.isSharing = isSharing
+        self.setSharing = setSharing
+    }
+
+    func skillFolder(for agent: Agent) -> URL {
+        FluidServeSkillInstaller.skillFile(for: agent, home: self.home).deletingLastPathComponent()
+    }
+
+    /// Puts a short message on the clipboard for any coding agent the page has no row for, and
+    /// starts sharing so that agent can read meetings. It says "copied" only when the clipboard took it.
+    func copyAgentInstructions() {
+        guard let tool = self.toolURL() else {
+            self.copiedAgentInstructions = false
+            self.issue = FluidServeSkillInstaller.InstallError.toolMissing.localizedDescription
+            return
+        }
+        self.copiedAgentInstructions = self.copyToClipboard(FluidServeSkill.agentInstructions(toolPath: tool.path))
+        if !self.copiedAgentInstructions {
+            self.issueAgent = nil
+            self.issue = "Could not copy to the clipboard."
+            return
+        }
+        if self.issueAgent == nil { self.issue = nil }
+        self.setSharing(true)
+        Task { await self.refresh() }
+    }
+
+    /// Returns what it read from disk, so a caller can confirm its own change even when a newer
+    /// refresh has already replaced what the page shows. The command is only run while meetings are shared.
+    @discardableResult
+    func refresh() async -> [Agent: Status] {
+        let home = self.home
+        let tool = self.toolURL()
+        let selfCheck = self.selfCheck
+        let sharing = self.isSharing()
+        self.refreshGeneration += 1
+        let generation = self.refreshGeneration
+        self.toolIsBundled = tool != nil
+        self.isChecking = sharing && tool != nil
+        let codexLink = FluidServeSkillInstaller.codexNewChatURL()
+        let found = await Self.offThePool {
+            let statuses = Dictionary(uniqueKeysWithValues: Agent.allCases.map { agent in
+                (agent, FluidServeSkillInstaller.status(for: agent, toolPath: tool?.path ?? "", home: home))
+            })
+            let codexApp = codexLink.flatMap { NSWorkspace.shared.urlForApplication(toOpen: $0) }
+            let check = sharing ? tool.map(selfCheck) : nil
+            return (statuses, codexApp != nil, check)
+        }
+        guard generation == self.refreshGeneration else { return found.0 }
+        self.statuses = found.0
+        self.codexAppIsInstalled = found.1
+        self.check = found.2
+        self.isChecking = false
+        return found.0
+    }
+
+    /// Runs blocking file and process work on a dispatch queue, so waiting on the command never
+    /// parks one of Swift concurrency's few threads.
+    private nonisolated static func offThePool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { continuation.resume(returning: work()) }
+        }
+    }
+
+    /// Opens a new Codex chat with a starter prompt typed in. The user still presses send.
+    func openCodexChat() {
+        guard let url = FluidServeSkillInstaller.codexNewChatURL() else { return }
+        if !NSWorkspace.shared.open(url) {
+            self.issueAgent = .codex
+            self.issue = "Could not open Codex."
+        }
+    }
+
+    func revealSkill(for agent: Agent) {
+        NSWorkspace.shared.activateFileViewerSelecting([FluidServeSkillInstaller.skillFile(for: agent, home: self.home)])
+    }
+
+    func install(_ agent: Agent) async {
+        guard let tool = self.toolURL() else {
+            self.issue = FluidServeSkillInstaller.InstallError.toolMissing.localizedDescription
+            return
+        }
+        let wasPresent = self.statuses[agent] == .needsUpdate
+        await self.change(agent, notice: wasPresent ? .updated : .added, expecting: .installed) { home in
+            try FluidServeSkillInstaller.install(for: agent, toolPath: tool.path, home: home)
+        }
+    }
+
+    func remove(_ agent: Agent) async {
+        await self.change(agent, notice: .removed, expecting: .notInstalled) { home in
+            try FluidServeSkillInstaller.remove(for: agent, home: home)
+        }
+    }
+
+    /// Does the work, re-reads the disk, and only then says it worked: the notice is shown when the
+    /// file is really in the state the button promised. Sharing follows the skills: on once one is
+    /// added, off once none is left.
+    private func change(
+        _ agent: Agent,
+        notice: Notice,
+        expecting expected: Status,
+        _ work: @escaping @Sendable (URL) throws -> Void
+    ) async {
+        let home = self.home
+        let failure: String? = await Self.offThePool {
+            do {
+                try work(home)
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        var onDisk = await self.refresh()
+        let succeeded = failure == nil && onDisk[agent] == expected
+        if succeeded {
+            let anySkillLeft = onDisk.values.contains { $0 == .installed || $0 == .needsUpdate }
+            if self.isSharing() != anySkillLeft {
+                self.setSharing(anySkillLeft)
+                onDisk = await self.refresh()
+            }
+            self.notices[agent] = notice
+            if self.issueAgent == agent || self.issueAgent == nil { self.issue = nil }
+            if self.issueAgent == agent { self.issueAgent = nil }
+        } else {
+            self.notices[agent] = nil
+            self.issueAgent = agent
+            self.issue = failure ?? "\(agent.displayName): the skill file is not in the expected place. Nothing was confirmed."
+        }
+    }
+}
+
+/// The coding-agent rows on FluidMeet settings > Integrations: add the `fluidmeet` skill to
+/// Claude Code or Codex, or copy instructions for any other agent.
+struct MeetingAgentIntegrations: View {
+    @Environment(\.theme) private var theme
+    @StateObject private var model: FluidServeSettingsModel
+
+    init(model: FluidServeSettingsModel? = nil) {
+        _model = StateObject(wrappedValue: model ?? FluidServeSettingsModel())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
+            FluidManagementGroup(title: "Coding agents") {
+                VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
+                    if self.model.toolIsBundled {
+                        self.agentRow(.claudeCode, assetName: "Provider_Anthropic")
+                        Divider()
+                        self.agentRow(.codex, assetName: "Provider_OpenAI")
+                        Divider()
+                        self.otherAgentsRow
+                    } else {
+                        self.statusLabel("This build of FluidVoice cannot share meetings with coding agents.", symbol: "exclamationmark.circle.fill", color: .orange)
+                    }
+                }
+            }
+            self.checkLine
+            if let issue = self.model.issue {
+                self.statusLabel(issue, symbol: "exclamationmark.circle.fill", color: .orange)
+                    .textSelection(.enabled)
+            }
+        }
+        .task { await self.model.refresh() }
+    }
+
+    /// Proof from running the real command, shown only once an agent has been added.
+    @ViewBuilder
+    private var checkLine: some View {
+        switch self.model.check {
+        case let .working(meetings):
+            self.statusLabel(
+                meetings == 1 ? "Working. Your agents can read 1 meeting." : "Working. Your agents can read \(meetings) meetings.",
+                symbol: "checkmark.circle.fill",
+                color: Color.fluidGreen
+            )
+        case .accessOff:
+            self.statusLabel("Meetings are not reaching your agents yet. Remove the skill and add it again.", symbol: "exclamationmark.circle.fill", color: .orange)
+        case let .failed(reason):
+            self.statusLabel(reason, symbol: "exclamationmark.circle.fill", color: .orange)
+        case nil:
+            if self.model.isChecking {
+                self.statusLabel("Checking…", symbol: "arrow.triangle.2.circlepath", color: self.theme.palette.secondaryText)
+            }
+        }
+    }
+
+    private func statusLabel(_ text: String, symbol: String, color: Color) -> some View {
+        Label(text, systemImage: symbol)
+            .font(self.theme.typography.caption)
+            .foregroundStyle(color)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func tile(@ViewBuilder _ content: () -> some View) -> some View {
+        content()
+            .frame(width: 44, height: 44)
+            .background(Color(nsColor: .white), in: RoundedRectangle(cornerRadius: self.theme.metrics.corners.md))
+            .accessibilityHidden(true)
+    }
+
+    private func agentRow(_ agent: FluidServeSkillInstaller.Agent, assetName: String) -> some View {
+        let status = self.model.statuses[agent]
+        let state = Self.state(for: status)
+        return HStack(spacing: self.theme.metrics.spacing.md) {
+            self.tile {
+                Image(assetName)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 26, height: 26)
+            }
+            VStack(alignment: .leading, spacing: self.theme.metrics.spacing.xs) {
+                HStack(spacing: self.theme.metrics.spacing.sm) {
+                    Text(agent.displayName)
+                        .font(self.theme.typography.bodyStrong)
+                        .foregroundStyle(self.theme.palette.primaryText)
+                    Label(state.title, systemImage: state.symbol)
+                        .font(self.theme.typography.badge)
+                        .foregroundStyle(self.color(for: state.tone))
+                        .accessibilityLabel("\(agent.displayName): \(state.title)")
+                }
+                HStack(spacing: 6) {
+                    Text(Self.detail(for: status, notice: self.model.notices[agent], agent: agent, folder: self.model.skillFolder(for: agent)))
+                        .font(self.theme.typography.caption)
+                        .foregroundStyle(self.theme.palette.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if status == .installed || status == .needsUpdate || status == .foreign {
+                        Button("Show in Finder") { self.model.revealSkill(for: agent) }
+                            .buttonStyle(.link)
+                            .font(self.theme.typography.caption)
+                    }
+                }
+            }
+            Spacer(minLength: self.theme.metrics.spacing.md)
+            switch status {
+            case .notInstalled:
+                Button("Add skill") { Task { await self.model.install(agent) } }
+                    .meetingGlassAction(prominent: true)
+            case .needsUpdate:
+                Button("Update skill") { Task { await self.model.install(agent) } }
+                    .meetingGlassAction(prominent: true)
+                Button("Remove skill") { Task { await self.model.remove(agent) } }
+                    .meetingGlassAction()
+            case .installed:
+                if agent == .codex, self.model.codexAppIsInstalled {
+                    Button("Open Codex") { self.model.openCodexChat() }
+                        .meetingGlassAction(prominent: true)
+                        .help("Starts a new Codex chat with a first question typed in. Nothing is sent until you send it.")
+                }
+                Button("Remove skill") { Task { await self.model.remove(agent) } }
+                    .meetingGlassAction()
+            case .agentNotFound, .foreign, nil:
+                EmptyView()
+            }
+        }
+        .padding(.vertical, self.theme.metrics.spacing.sm)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// For Cursor, Gemini and the rest: one message to paste, and the agent adds the skill itself.
+    private var otherAgentsRow: some View {
+        HStack(spacing: self.theme.metrics.spacing.md) {
+            self.tile {
+                Image(systemName: "terminal")
+                    .font(.fluidSystem(size: 20, weight: .medium))
+                    .foregroundStyle(Color.black)
+            }
+            VStack(alignment: .leading, spacing: self.theme.metrics.spacing.xs) {
+                HStack(spacing: self.theme.metrics.spacing.sm) {
+                    Text("Other agents")
+                        .font(self.theme.typography.bodyStrong)
+                        .foregroundStyle(self.theme.palette.primaryText)
+                    if self.model.copiedAgentInstructions {
+                        Label("Copied", systemImage: "checkmark.circle.fill")
+                            .font(self.theme.typography.badge)
+                            .foregroundStyle(Color.fluidGreen)
+                    }
+                }
+                Text(
+                    self.model.copiedAgentInstructions
+                        ? "Paste it into your coding agent and it adds the skill itself."
+                        : "Cursor, Gemini and the rest. Copy a short message, paste it in, and the agent adds the skill itself."
+                )
+                .font(self.theme.typography.caption)
+                .foregroundStyle(self.theme.palette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: self.theme.metrics.spacing.md)
+            Button("Copy instructions") { self.model.copyAgentInstructions() }
+                .meetingGlassAction()
+        }
+        .padding(.vertical, self.theme.metrics.spacing.sm)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func color(for tone: Tone) -> Color {
+        switch tone {
+        case .good: return Color.fluidGreen
+        case .attention: return .orange
+        case .neutral: return self.theme.palette.secondaryText
+        }
+    }
+
+    enum Tone: Equatable {
+        case good
+        case attention
+        case neutral
+    }
+
+    /// The word and mark next to each agent's name: the state, never the next action.
+    static func state(for status: FluidServeSkillInstaller.Status?) -> (title: String, symbol: String, tone: Tone) {
+        switch status {
+        case nil: return ("Checking…", "arrow.triangle.2.circlepath", .neutral)
+        case .agentNotFound: return ("Not on this Mac", "minus.circle", .neutral)
+        case .notInstalled: return ("Not added", "circle", .neutral)
+        case .installed: return ("Skill added", "checkmark.circle.fill", .good)
+        case .needsUpdate: return ("Needs update", "exclamationmark.circle.fill", .attention)
+        case .foreign: return ("Different skill found", "exclamationmark.circle.fill", .attention)
+        }
+    }
+
+    static func detail(
+        for status: FluidServeSkillInstaller.Status?,
+        notice: FluidServeSettingsModel.Notice?,
+        agent: FluidServeSkillInstaller.Agent,
+        folder: URL
+    ) -> String {
+        let place = (folder.path as NSString).abbreviatingWithTildeInPath
+        switch status {
+        case nil: return "Looking for the skill…"
+        case .agentNotFound: return "\(agent.displayName) has not been set up, so there is nowhere to add the skill."
+        case .notInstalled:
+            return notice == .removed ? "Removed just now." : "Adds a skill so \(agent.displayName) can read your meetings."
+        case .installed:
+            let lead = notice == .added ? "Added just now" : notice == .updated ? "Updated just now" : "Added"
+            return "\(lead) in \(place). Start a new session and ask about a meeting."
+        case .needsUpdate: return "This skill is from an older or moved copy of FluidVoice."
+        case .foreign: return "Another \(FluidServeSkillInstaller.skillName) skill is already in \(place). FluidVoice will not replace it."
+        }
+    }
+}

@@ -23,15 +23,15 @@ nonisolated enum FluidServeSelfCheck {
         do {
             try process.run()
         } catch {
-            return .failed("fv-serve could not start: \(error.localizedDescription)")
+            return .failed("The meeting reader could not start: \(error.localizedDescription)")
         }
         guard finished.wait(timeout: .now() + timeout) == .success else {
             process.terminate()
-            return .failed("fv-serve did not answer in time.")
+            return .failed("The meeting reader did not answer in time.")
         }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         guard process.terminationStatus == 0 else {
-            return .failed("fv-serve stopped with code \(process.terminationStatus).")
+            return .failed("The meeting reader stopped with code \(process.terminationStatus).")
         }
         return self.outcome(fromStatusJSON: data)
     }
@@ -40,7 +40,7 @@ nonisolated enum FluidServeSelfCheck {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = object["access"] as? Bool,
               let meetings = object["meetings"] as? Int
-        else { return .failed("fv-serve gave an answer FluidVoice could not read.") }
+        else { return .failed("The meeting reader gave an answer FluidVoice could not read.") }
         return access ? .working(meetings: meetings) : .accessOff
     }
 }
