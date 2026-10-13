@@ -39,6 +39,13 @@ nonisolated enum MeetingAppRegistry {
         "com.microsoft.edgemac.app.",
     ]
 
+    /// A browser web app such as Google Meet's runs inside its browser, which is the process that
+    /// actually holds the microphone. Nil for anything that is not such a web app.
+    static func parentBrowser(ofWebApp bundleIdentifier: String) -> String? {
+        guard let prefix = self.pwaBundlePrefixes.first(where: { bundleIdentifier.hasPrefix($0) }) else { return nil }
+        return String(prefix.dropLast(".app.".count))
+    }
+
     static func tier(forBundleIdentifier bundleIdentifier: String) -> MeetingDetectionTier? {
         if self.nativeBundleIdentifiers.contains(bundleIdentifier) {
             return .nativeTier1

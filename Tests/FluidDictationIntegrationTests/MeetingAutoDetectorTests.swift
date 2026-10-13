@@ -1697,7 +1697,70 @@ final class MeetingAutoDetectorTests: XCTestCase {
         h.detector.tick(at: h.clock.now())
         XCTAssertEqual(h.withdrawals, 0, "the browser is open again but not in a call")
 
+        // A voice recorder page uses the microphone too. That is not the meeting coming back.
+        h.detector.handleBrowserTabURL(.init(host: "voicerecorder.example", path: "/"), pid: 9, bundleIdentifier: "com.google.Chrome", at: h.clock.now())
         await h.pollChrome(microphoneInUse: true, pid: 9)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 0)
+
+        h.detector.handleBrowserTabURL(.init(host: "meet.google.com", path: "/abc-defg-hij"), pid: 9, bundleIdentifier: "com.google.Chrome", at: h.clock.now())
+        await h.pollChrome(microphoneInUse: true, pid: 9)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.withdrawals, 1)
+    }
+
+    func testARelaunchedTeamsPlayingASoundIsNotTakenForTheCallComingBack() async throws {
+        let h = try self.teamsRecordingThatAsked()
+        h.detector.handleWorkspaceEvent(.init(kind: .terminated, bundleIdentifier: "com.microsoft.teams2", processID: 300), at: h.clock.now())
+        h.detector.handleWorkspaceEvent(.init(kind: .activated, bundleIdentifier: "com.microsoft.teams2", processID: 302), at: h.clock.now())
+        h.detector.handleWindowSnapshot([.init(processID: 302, windowID: 951, title: nil, layer: 0)], at: h.clock.now())
+
+        func poll(microphoneInUse: Bool) async {
+            let teams = MeetingProcessOwner(processID: 302, bundleIdentifier: "com.microsoft.teams2", bundlePath: "/Applications/Microsoft Teams.app")
+            let helper = AudioProcessDescriptor(
+                processID: 303,
+                bundleIdentifier: nil,
+                executablePath: "/Applications/Microsoft Teams.app/Contents/Helpers/Teams Helper",
+                isInputRunning: microphoneInUse,
+                isOutputRunning: true
+            )
+            h.audioProcessActivity.snapshotOverride = AudioProcessActivitySnapshot(processes: [helper], owners: [teams], queryState: .valid)
+            await h.detector.pollAudioProcessActivity(at: h.clock.now())
+            h.detector.tick(at: h.clock.now())
+        }
+
+        // A notification chime: sound, no microphone.
+        await poll(microphoneInUse: false)
+        XCTAssertEqual(h.withdrawals, 0)
+
+        // Back in the call with the microphone on.
+        await poll(microphoneInUse: true)
+        XCTAssertEqual(h.withdrawals, 1)
+    }
+
+    func testAGoogleMeetWebAppEndsOnItsBrowsersMicrophone() async throws {
+        let h = DetectorHarness()
+        let webApp = "com.google.Chrome.app.kjgfgldnnfoeklkmfkjfagphfepbbdan"
+        XCTAssertEqual(MeetingAppRegistry.parentBrowser(ofWebApp: webApp), "com.google.Chrome")
+        XCTAssertEqual(MeetingAppRegistry.parentBrowser(ofWebApp: "com.microsoft.edgemac.app.abc"), "com.microsoft.edgemac")
+        XCTAssertNil(MeetingAppRegistry.parentBrowser(ofWebApp: "com.google.Chrome"))
+
+        h.workspace.frontmostProcessID = 20
+        h.detector.handleBackfill([.init(kind: .launched, bundleIdentifier: webApp, processID: 20)])
+        h.detector.handleBrowserTabURL(.init(host: "meet.google.com", path: "/abc-defg-hij"), pid: 20, bundleIdentifier: webApp, at: h.clock.now())
+        h.detector.handleMicEdge(.init(isActive: true), at: h.clock.now())
+        let episodeID = try XCTUnwrap(h.prompts.last?.episodeID)
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+
+        // The web app has its own process, but Chrome (pid 8) is what holds the microphone.
+        await h.pollChrome(microphoneInUse: true, pid: 8)
+        await h.pollChrome(microphoneInUse: false, pid: 8)
+        h.advance(MeetingAutoDetector.endSignalGraceSeconds + 1)
+        await h.pollChrome(microphoneInUse: false, pid: 8)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+
+        await h.pollChrome(microphoneInUse: true, pid: 8)
         h.detector.tick(at: h.clock.now())
         XCTAssertEqual(h.withdrawals, 1)
     }

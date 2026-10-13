@@ -251,6 +251,9 @@ final class MeetingAutoDetector {
 
     private func shouldCollectEvidence(at now: Date) -> Bool {
         if !self.episodesByKey.isEmpty { return true }
+        // A browser we were recording is gone. Keep reading tabs so a relaunched one that is back
+        // on the meeting can be recognised.
+        if let watched = self.watchedRecording, watched.tier == .browserTier2, !self.isStillRunning(watched) { return true }
         return self.records.values.contains { record in
             record.hasLiveWindow || record.windowLostAt != nil
                 || record.audioEvidenceAt.map { now.timeIntervalSince($0) <= Self.confirmDeadlineSeconds } == true
@@ -389,10 +392,11 @@ final class MeetingAutoDetector {
             // to make output-only activity meaningful. Zoom's muted output-only path remains
             // supported because Zoom also requires an explicit meeting-window title.
             let hasEstablishedEpisode = self.episodesByKey.values.contains { $0.pid == pid }
-            // The app behind our own recording stays established after its episode retires, so a
-            // muted call that resumes still reads as audio. We are busy recording, so this cannot
+            // The process behind our own recording stays established after its episode retires, so
+            // a muted call that resumes still reads as audio. Only that process: a relaunched copy
+            // playing a notification sound is not a call. We are busy recording, so this cannot
             // raise a start prompt.
-            let isBehindOurRecording = self.watchedRecording?.bundleIdentifier == record.bundleIdentifier
+            let isBehindOurRecording = self.watchedRecording.map { $0.pid == pid && $0.incarnation == record.incarnation } == true
             if isActive, !hasInput, record.bundleIdentifier != "us.zoom.xos", !hasEstablishedEpisode, !isBehindOurRecording {
                 self.handleAudioProcessActivity(false, pid: pid, at: now)
                 continue
@@ -412,11 +416,13 @@ final class MeetingAutoDetector {
         if let inputByPID {
             watched.browserMicUnknown = false
             if !self.isStillRunning(watched) {
+                // The microphone alone could be a voice recorder page. It has to be on a meeting tab.
                 self.follow(&watched, to: self.records.values.filter {
-                    $0.bundleIdentifier == watched.bundleIdentifier && $0.tier == .browserTier2 && inputByPID[$0.pid] == true
+                    $0.bundleIdentifier == watched.bundleIdentifier && $0.tier == .browserTier2
+                        && $0.hasLiveWindow && inputByPID[$0.pid] == true
                 })
             }
-            if inputByPID[watched.pid] == true {
+            if self.microphoneOwnerPID(for: watched, in: snapshot).flatMap({ inputByPID[$0] }) == true {
                 watched.sawProcessAudio = true
                 watched.browserMicReleasedAt = nil
             } else if watched.sawProcessAudio, watched.browserMicReleasedAt == nil {
@@ -428,6 +434,14 @@ final class MeetingAutoDetector {
             watched.browserMicReleasedAt = nil
         }
         self.watchedRecording = watched
+    }
+
+    /// Where the watched browser's microphone shows up: its own process, or for a web app the
+    /// browser it runs in.
+    private func microphoneOwnerPID(for watched: WatchedRecording, in snapshot: AudioProcessActivitySnapshot) -> Int32? {
+        guard let browser = MeetingAppRegistry.parentBrowser(ofWebApp: watched.bundleIdentifier) else { return watched.pid }
+        let browsers = snapshot.owners.filter { $0.bundleIdentifier == browser }
+        return browsers.count == 1 ? browsers.first?.processID : nil
     }
 
     private func isStillRunning(_ watched: WatchedRecording) -> Bool {
