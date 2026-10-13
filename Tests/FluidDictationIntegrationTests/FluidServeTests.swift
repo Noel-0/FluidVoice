@@ -181,6 +181,13 @@ final class FluidServeTests: XCTestCase {
         try self.saveSummary("For an older transcript.", style: "actions", for: session, transcriptHash: "stale")
         XCTAssertEqual(FluidServeMeetings.savedSummaries(for: entry).map(\.style), ["executive"])
 
+        // A custom summary counts only while the prompt box still holds the prompt it was written with.
+        try self.saveSummary("Risks only.", style: "custom", for: session, promptHash: MeetingSummaryInput.fingerprint("Focus on risks"))
+        try self.saveSummary("Carries a prompt it should not.", style: "detailed", for: session, promptHash: MeetingSummaryInput.fingerprint("Focus on risks"))
+        XCTAssertEqual(FluidServeMeetings.savedSummaries(for: entry, customPrompt: "  Focus on risks\n").map(\.style), ["custom", "executive"])
+        XCTAssertEqual(FluidServeMeetings.savedSummaries(for: entry, customPrompt: "Focus on dates").map(\.style), ["executive"])
+        XCTAssertEqual(FluidServeMeetings.savedSummaries(for: entry).map(\.style), ["executive"])
+
         // Renaming a speaker changes the transcript, so the app hides the summary and so must the command.
         session.speakers[0].displayName = "Priya R."
         try self.save(session)
@@ -237,7 +244,7 @@ final class FluidServeTests: XCTestCase {
         XCTAssertTrue(description.hasSuffix("\""), "The description is one quoted line, so a colon inside it cannot break the header")
         XCTAssertEqual(description.filter { $0 == "\"" }.count, 2)
         XCTAssertEqual(written.split(separator: "\n", omittingEmptySubsequences: false)[3], "---")
-        XCTAssertTrue(written.contains("\"\(tool)\" meet list"))
+        XCTAssertTrue(written.contains("'\(tool)' meet list"))
         XCTAssertEqual(FluidServeSkillInstaller.status(for: agent, toolPath: tool, home: self.home), .installed)
         XCTAssertFalse(FileManager.default.fileExists(atPath: self.home.appendingPathComponent(".codex").path), "Adding one tool's skill must not create the other tool's folder")
 
@@ -293,7 +300,7 @@ final class FluidServeTests: XCTestCase {
         XCTAssertTrue(model.copiedAgentInstructions)
         XCTAssertNil(model.issue)
         XCTAssertEqual(clipboard, FluidServeSkill.agentInstructions(toolPath: tool.path))
-        XCTAssertEqual(clipboard?.contains("\"/Applications/Fluid Voice.app/Contents/Helpers/fv-serve\" skill"), true, "The path is quoted, so a space in it still works")
+        XCTAssertEqual(clipboard?.contains("'/Applications/Fluid Voice.app/Contents/Helpers/fv-serve' skill"), true, "The path is quoted, so a space in it still works")
         XCTAssertEqual(clipboard?.contains("fluidmeet"), true)
 
         let refused = FluidServeSettingsModel(home: self.home, toolURL: { tool }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: { _ in false })
@@ -304,6 +311,34 @@ final class FluidServeTests: XCTestCase {
         let missing = FluidServeSettingsModel(home: self.home, toolURL: { nil }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: { _ in true })
         missing.copyAgentInstructions()
         XCTAssertFalse(missing.copiedAgentInstructions, "Nothing to copy when this build has no fv-serve")
+    }
+
+    func testAnOddlyNamedAppFolderCannotChangeWhatThePastedCommandRuns() {
+        XCTAssertEqual(FluidServeSkill.shellQuoted("/Applications/FluidVoice.app/x"), "'/Applications/FluidVoice.app/x'")
+        let nasty = "/Apps/It's \"mine\" $(touch /tmp/x) `id`/FluidVoice.app/Contents/Helpers/fv-serve"
+        let quoted = FluidServeSkill.shellQuoted(nasty)
+        XCTAssertEqual(quoted, "'/Apps/It'\\''s \"mine\" $(touch /tmp/x) `id`/FluidVoice.app/Contents/Helpers/fv-serve'")
+        // Every single quote in the path is closed, escaped and reopened, so nothing sits outside quotes.
+        XCTAssertEqual(quoted.components(separatedBy: "'\\''").joined().filter { $0 == "'" }.count, 2)
+        XCTAssertTrue(FluidServeSkill.agentInstructions(toolPath: nasty).contains(quoted + " skill"))
+        XCTAssertTrue(FluidServeSkill.document(toolPath: nasty).contains(quoted + " meet list"))
+    }
+
+    func testOneRowsSuccessDoesNotWipeAnotherRowsError() async throws {
+        try FileManager.default.createDirectory(at: self.home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+        let theirs = FluidServeSkillInstaller.skillFile(for: .codex, home: self.home)
+        try FileManager.default.createDirectory(at: theirs.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("---\nname: fluidmeet\n---\nHand written.\n".utf8).write(to: theirs)
+        let model = FluidServeSettingsModel(home: self.home, toolURL: { URL(fileURLWithPath: "/x/fv-serve") }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: { _ in true })
+        await model.refresh(accessEnabled: true)
+
+        await model.install(.codex, accessEnabled: true)
+        let problem = try XCTUnwrap(model.issue)
+        await model.install(.claudeCode, accessEnabled: true)
+        XCTAssertEqual(model.notices[.claudeCode], .added)
+        XCTAssertEqual(model.issue, problem, "Claude Code succeeding says nothing about Codex")
+        model.copyAgentInstructions()
+        XCTAssertEqual(model.issue, problem)
     }
 
     func testCodexLinkOpensANewChatWithThePromptTypedIn() throws {
@@ -536,7 +571,8 @@ final class FluidServeTests: XCTestCase {
         style: String,
         for session: MeetingSession,
         providerID: String? = "on-device",
-        transcriptHash: String? = nil
+        transcriptHash: String? = nil,
+        promptHash: String? = nil
     ) throws {
         let saved = MeetingSummaryController.SavedSummary(
             transcriptHash: transcriptHash ?? MeetingSummaryInput.fingerprint(MeetingSummaryInput.transcript(for: session)),
@@ -544,6 +580,7 @@ final class FluidServeTests: XCTestCase {
             text: text,
             providerID: providerID,
             generatedAt: Date(timeIntervalSince1970: 1_700_000_500),
+            promptHash: promptHash,
             modelName: "Qwen3.5 9B"
         )
         try JSONEncoder().encode(saved).write(to: self.directory(for: session).appendingPathComponent("manual-summary-\(style).json"))
