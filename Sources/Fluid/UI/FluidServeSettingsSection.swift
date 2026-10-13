@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 
@@ -10,6 +11,8 @@ final class FluidServeSettingsModel: ObservableObject {
 
     @Published private(set) var statuses: [Agent: Status] = [:]
     @Published private(set) var toolIsBundled = true
+    /// Whether an app on this Mac opens `codex://` links, so the row can offer to start a chat.
+    @Published private(set) var codexAppIsInstalled = false
     @Published private(set) var issue: String?
 
     private let home: URL
@@ -27,11 +30,24 @@ final class FluidServeSettingsModel: ObservableObject {
         let home = self.home
         let tool = self.toolURL()
         self.toolIsBundled = tool != nil
-        self.statuses = await Task.detached(priority: .utility) {
-            Dictionary(uniqueKeysWithValues: Agent.allCases.map { agent in
+        let codexLink = FluidServeSkillInstaller.codexNewChatURL()
+        let found = await Task.detached(priority: .utility) {
+            let statuses = Dictionary(uniqueKeysWithValues: Agent.allCases.map { agent in
                 (agent, FluidServeSkillInstaller.status(for: agent, toolPath: tool?.path ?? "", home: home))
             })
+            let codexApp = codexLink.flatMap { NSWorkspace.shared.urlForApplication(toOpen: $0) }
+            return (statuses, codexApp != nil)
         }.value
+        self.statuses = found.0
+        self.codexAppIsInstalled = found.1
+    }
+
+    /// Opens a new Codex chat with a starter prompt typed in. The user still presses send.
+    func openCodexChat() {
+        guard let url = FluidServeSkillInstaller.codexNewChatURL() else { return }
+        if !NSWorkspace.shared.open(url) {
+            self.issue = "Could not open Codex."
+        }
     }
 
     func install(_ agent: Agent) async {
@@ -149,6 +165,11 @@ struct FluidServeSettingsSection: View {
                 Button("Remove") { Task { await self.model.remove(agent) } }
                     .fluidGlassAction()
             case .installed:
+                if agent == .codex, self.model.codexAppIsInstalled {
+                    Button("Open Codex") { self.model.openCodexChat() }
+                        .fluidGlassAction(prominent: true)
+                        .help("Starts a new Codex chat with a first question typed in. Nothing is sent until you send it.")
+                }
                 Button("Remove") { Task { await self.model.remove(agent) } }
                     .fluidGlassAction()
             case .agentNotFound, .foreign, nil:

@@ -218,6 +218,18 @@ final class FluidServeTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), theirs)
     }
 
+    func testCodexLinkOpensANewChatWithThePromptTypedIn() throws {
+        let url = try XCTUnwrap(FluidServeSkillInstaller.codexNewChatURL(prompt: "List my meetings & notes?"))
+        XCTAssertEqual(url.scheme, "codex")
+        XCTAssertEqual(url.host, "threads")
+        XCTAssertEqual(url.path, "/new")
+        let items = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(items.first { $0.name == "prompt" }?.value, "List my meetings & notes?", "The prompt survives encoding intact")
+        XCTAssertEqual(items.first { $0.name == "mode" }?.value, "codex")
+        XCTAssertEqual(url.absoluteString.components(separatedBy: "&").count, 2, "An ampersand in the prompt must not start a new parameter")
+        XCTAssertTrue(FluidServeSkillInstaller.starterPrompt.contains(FluidServeSkillInstaller.skillName))
+    }
+
     // MARK: - Fixtures
 
     private func run(_ arguments: String...) -> FluidServeCommand.Result {
