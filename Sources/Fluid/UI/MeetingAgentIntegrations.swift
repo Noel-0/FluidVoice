@@ -62,10 +62,6 @@ final class FluidServeSettingsModel: ObservableObject {
         self.setSharing = setSharing
     }
 
-    func skillFolder(for agent: Agent) -> URL {
-        FluidServeSkillInstaller.skillFile(for: agent, home: self.home).deletingLastPathComponent()
-    }
-
     /// Puts a short message on the clipboard for any coding agent the page has no row for, and
     /// starts sharing so that agent can read meetings. It says "copied" only when the clipboard took it.
     func copyAgentInstructions() {
@@ -129,10 +125,6 @@ final class FluidServeSettingsModel: ObservableObject {
             self.issueAgent = .codex
             self.issue = "Could not open Codex."
         }
-    }
-
-    func revealSkill(for agent: Agent) {
-        NSWorkspace.shared.activateFileViewerSelecting([FluidServeSkillInstaller.skillFile(for: agent, home: self.home)])
     }
 
     func install(_ agent: Agent) async {
@@ -223,26 +215,16 @@ struct MeetingAgentIntegrations: View {
         .task { await self.model.refresh() }
     }
 
-    /// Proof from running the real command, shown only once an agent has been added.
+    /// The real command is run behind the scenes; the page only speaks up when it is not working.
     @ViewBuilder
     private var checkLine: some View {
         switch self.model.check {
-        case let .working(meetings):
-            self.statusLabel(
-                meetings == 1
-                    ? "Working. Your agents can read 1 meeting. Ask about it in a new session."
-                    : "Working. Your agents can read \(meetings) meetings. Ask about one in a new session.",
-                symbol: "checkmark.circle.fill",
-                color: Color.fluidGreen
-            )
         case .accessOff:
             self.statusLabel("Meetings are not reaching your agents yet. Remove the skill and add it again.", symbol: "exclamationmark.circle.fill", color: .orange)
         case let .failed(reason):
             self.statusLabel(reason, symbol: "exclamationmark.circle.fill", color: .orange)
-        case nil:
-            if self.model.isChecking {
-                self.statusLabel("Checking…", symbol: "arrow.triangle.2.circlepath", color: self.theme.palette.secondaryText)
-            }
+        case .working, nil:
+            EmptyView()
         }
     }
 
@@ -271,26 +253,13 @@ struct MeetingAgentIntegrations: View {
                     .frame(width: 26, height: 26)
             }
             VStack(alignment: .leading, spacing: self.theme.metrics.spacing.xs) {
-                HStack(spacing: self.theme.metrics.spacing.sm) {
-                    Text(agent.displayName)
-                        .font(self.theme.typography.bodyStrong)
-                        .foregroundStyle(self.theme.palette.primaryText)
-                    Label(state.title, systemImage: state.symbol)
-                        .font(self.theme.typography.badge)
-                        .foregroundStyle(self.color(for: state.tone))
-                        .accessibilityLabel("\(agent.displayName): \(state.title)")
-                }
-                HStack(spacing: 6) {
-                    Text(Self.detail(for: status, notice: self.model.notices[agent], agent: agent, folder: self.model.skillFolder(for: agent)))
-                        .font(self.theme.typography.caption)
-                        .foregroundStyle(self.theme.palette.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if status == .installed || status == .needsUpdate || status == .foreign {
-                        Button("Show in Finder") { self.model.revealSkill(for: agent) }
-                            .buttonStyle(.link)
-                            .font(self.theme.typography.caption)
-                    }
-                }
+                Text(agent.displayName)
+                    .font(self.theme.typography.bodyStrong)
+                    .foregroundStyle(self.theme.palette.primaryText)
+                Label(state.title, systemImage: state.symbol)
+                    .font(self.theme.typography.caption)
+                    .foregroundStyle(self.color(for: state.tone))
+                    .accessibilityLabel("\(agent.displayName): \(state.title)")
             }
             Spacer(minLength: self.theme.metrics.spacing.md)
             switch status {
@@ -327,24 +296,18 @@ struct MeetingAgentIntegrations: View {
                     .foregroundStyle(Color.black)
             }
             VStack(alignment: .leading, spacing: self.theme.metrics.spacing.xs) {
-                HStack(spacing: self.theme.metrics.spacing.sm) {
-                    Text("Other agents")
-                        .font(self.theme.typography.bodyStrong)
-                        .foregroundStyle(self.theme.palette.primaryText)
-                    if self.model.copiedAgentInstructions {
-                        Label("Copied", systemImage: "checkmark.circle.fill")
-                            .font(self.theme.typography.badge)
-                            .foregroundStyle(Color.fluidGreen)
-                    }
+                Text("Other agents")
+                    .font(self.theme.typography.bodyStrong)
+                    .foregroundStyle(self.theme.palette.primaryText)
+                if self.model.copiedAgentInstructions {
+                    Label("Copied. Paste it into your agent.", systemImage: "checkmark.circle.fill")
+                        .font(self.theme.typography.caption)
+                        .foregroundStyle(Color.fluidGreen)
+                } else {
+                    Text("Cursor, Gemini and others")
+                        .font(self.theme.typography.caption)
+                        .foregroundStyle(self.theme.palette.secondaryText)
                 }
-                Text(
-                    self.model.copiedAgentInstructions
-                        ? "Paste it into your coding agent and it adds the skill itself."
-                        : "Cursor, Gemini and the rest. Copy a short message, paste it in, and the agent adds the skill itself."
-                )
-                .font(self.theme.typography.caption)
-                .foregroundStyle(self.theme.palette.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: self.theme.metrics.spacing.md)
             Button("Copy instructions") { self.model.copyAgentInstructions() }
@@ -376,27 +339,7 @@ struct MeetingAgentIntegrations: View {
         case .notInstalled: return ("Not added", "circle", .neutral)
         case .installed: return ("Skill added", "checkmark.circle.fill", .good)
         case .needsUpdate: return ("Needs update", "exclamationmark.circle.fill", .attention)
-        case .foreign: return ("Different skill found", "exclamationmark.circle.fill", .attention)
-        }
-    }
-
-    static func detail(
-        for status: FluidServeSkillInstaller.Status?,
-        notice: FluidServeSettingsModel.Notice?,
-        agent: FluidServeSkillInstaller.Agent,
-        folder: URL
-    ) -> String {
-        let place = (folder.path as NSString).abbreviatingWithTildeInPath
-        switch status {
-        case nil: return "Looking for the skill…"
-        case .agentNotFound: return "\(agent.displayName) has not been set up, so there is nowhere to add the skill."
-        case .notInstalled:
-            return notice == .removed ? "Removed just now." : "Adds a skill so \(agent.displayName) can read your meetings."
-        case .installed:
-            let lead = notice == .added ? "Added just now in" : notice == .updated ? "Updated just now in" : "In"
-            return "\(lead) \(place)"
-        case .needsUpdate: return "This skill is from an older or moved copy of FluidVoice."
-        case .foreign: return "Another \(FluidServeSkillInstaller.skillName) skill is already in \(place). FluidVoice will not replace it."
+        case .foreign: return ("Another fluidmeet skill is already there", "exclamationmark.circle.fill", .attention)
         }
     }
 }

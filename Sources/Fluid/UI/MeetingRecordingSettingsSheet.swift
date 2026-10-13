@@ -466,13 +466,10 @@ struct MeetingRecordingSettingsSheet: View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.xl) {
             MeetingAgentIntegrations()
 
-            Label(
-                "Coding agents are cloud tools: a meeting they read is sent to them. Nothing is shared until you add one, and it stops when you remove the skills.",
-                systemImage: "lock.fill"
-            )
-            .font(self.theme.typography.caption)
-            .foregroundStyle(self.theme.palette.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
+            Label("A meeting an agent reads is sent to that agent.", systemImage: "lock.fill")
+                .font(self.theme.typography.caption)
+                .foregroundStyle(self.theme.palette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

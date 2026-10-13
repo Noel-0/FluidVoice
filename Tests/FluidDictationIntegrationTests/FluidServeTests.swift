@@ -394,9 +394,6 @@ final class FluidServeTests: XCTestCase {
         XCTAssertNil(model.notices[.codex], "Adding one tool's skill says nothing about the other")
         XCTAssertTrue(self.sharing.value, "Adding an agent is what starts sharing; there is no separate switch")
         XCTAssertEqual(model.check, .working(meetings: 3))
-        let added = MeetingAgentIntegrations.detail(for: .installed, notice: .added, agent: .claudeCode, folder: model.skillFolder(for: .claudeCode))
-        XCTAssertTrue(added.hasPrefix("Added just now in "))
-        XCTAssertTrue(added.contains("/.claude/skills/fluidmeet"))
 
         await model.remove(.claudeCode)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
@@ -404,8 +401,6 @@ final class FluidServeTests: XCTestCase {
         XCTAssertEqual(model.notices[.claudeCode], .removed)
         XCTAssertFalse(self.sharing.value, "Removing the last skill stops sharing")
         XCTAssertNil(model.check)
-        let removed = MeetingAgentIntegrations.detail(for: .notInstalled, notice: .removed, agent: .claudeCode, folder: model.skillFolder(for: .claudeCode))
-        XCTAssertTrue(removed.hasPrefix("Removed just now."))
     }
 
     func testSharingStaysOnWhileAnyAgentStillHasTheSkill() async throws {
