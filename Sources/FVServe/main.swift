@@ -5,7 +5,9 @@ import Foundation
 
 /// The bundle identifier of the app this copy shipped in, so Debug and release builds each read their own switch.
 func enclosingAppBundleIdentifier() -> String {
-    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    // The real location of this program, not the name it was started by: `argv[0]` is just
+    // "fv-serve" when it is found through PATH or a symlink.
+    let executable = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
     let infoPlist = executable.deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Info.plist", isDirectory: false)
     if let info = NSDictionary(contentsOf: infoPlist), let identifier = info["CFBundleIdentifier"] as? String {

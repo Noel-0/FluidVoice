@@ -30,6 +30,8 @@ final class FluidServeSettingsModel: ObservableObject {
     private let home: URL
     private let toolURL: () -> URL?
     private let selfCheck: @Sendable (URL) -> FluidServeSelfCheck.Outcome
+    /// Counts refreshes so a slow one that finishes late cannot overwrite a newer answer.
+    private var refreshGeneration = 0
 
     init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -46,25 +48,40 @@ final class FluidServeSettingsModel: ObservableObject {
     }
 
     /// `accessEnabled` is the switch as the page shows it; the command is only run while it is on.
-    func refresh(accessEnabled: Bool) async {
+    /// Returns what it read from disk, so a caller can confirm its own change even when a newer
+    /// refresh has already replaced what the page shows.
+    @discardableResult
+    func refresh(accessEnabled: Bool) async -> [Agent: Status] {
         let home = self.home
         let tool = self.toolURL()
         let selfCheck = self.selfCheck
+        self.refreshGeneration += 1
+        let generation = self.refreshGeneration
         self.toolIsBundled = tool != nil
         self.isChecking = accessEnabled && tool != nil
         let codexLink = FluidServeSkillInstaller.codexNewChatURL()
-        let found = await Task.detached(priority: .utility) {
+        let found = await Self.offThePool {
             let statuses = Dictionary(uniqueKeysWithValues: Agent.allCases.map { agent in
                 (agent, FluidServeSkillInstaller.status(for: agent, toolPath: tool?.path ?? "", home: home))
             })
             let codexApp = codexLink.flatMap { NSWorkspace.shared.urlForApplication(toOpen: $0) }
             let check = accessEnabled ? tool.map(selfCheck) : nil
             return (statuses, codexApp != nil, check)
-        }.value
+        }
+        guard generation == self.refreshGeneration else { return found.0 }
         self.statuses = found.0
         self.codexAppIsInstalled = found.1
         self.check = found.2
         self.isChecking = false
+        return found.0
+    }
+
+    /// Runs blocking file and process work on a dispatch queue, so waiting on `fv-serve` never
+    /// parks one of Swift concurrency's few threads.
+    private nonisolated static func offThePool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { continuation.resume(returning: work()) }
+        }
     }
 
     /// Opens a new Codex chat with a starter prompt typed in. The user still presses send.
@@ -106,16 +123,16 @@ final class FluidServeSettingsModel: ObservableObject {
         _ work: @escaping @Sendable (URL) throws -> Void
     ) async {
         let home = self.home
-        let failure: String? = await Task.detached(priority: .userInitiated) {
+        let failure: String? = await Self.offThePool {
             do {
                 try work(home)
                 return nil
             } catch {
                 return error.localizedDescription
             }
-        }.value
-        await self.refresh(accessEnabled: accessEnabled)
-        if failure == nil, self.statuses[agent] == expected {
+        }
+        let onDisk = await self.refresh(accessEnabled: accessEnabled)
+        if failure == nil, onDisk[agent] == expected {
             self.notices[agent] = notice
             self.issue = nil
         } else {
