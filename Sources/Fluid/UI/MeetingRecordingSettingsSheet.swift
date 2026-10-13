@@ -46,6 +46,9 @@ struct MeetingRecordingSettingsSheet: View {
     @Environment(\.theme) private var theme
 
     @State private var selectedSection: MeetingSettingsSection
+    /// What the sheet opened with, to tell whether leaving it would throw edits away.
+    @State private var openedDraft: MeetingTranscriptionSetupDraft
+    @State private var openedRetentionPolicy: MeetingAudioRetentionPolicy
 
     // Keeps the existing sheet's bindings and callbacks together at its presentation boundary.
     init(
@@ -78,6 +81,19 @@ struct MeetingRecordingSettingsSheet: View {
         self.onCancel = onCancel
         self.onSave = onSave
         self._selectedSection = State(initialValue: initialSection)
+        self._openedDraft = State(initialValue: draft.wrappedValue)
+        self._openedRetentionPolicy = State(initialValue: retentionPolicy.wrappedValue)
+    }
+
+    private var hasUnsavedChanges: Bool {
+        self.draft != self.openedDraft || self.retentionPolicy != self.openedRetentionPolicy
+    }
+
+    /// Nothing on Integrations waits for Save, so the button there only closes. With edits made
+    /// on another tab still unsaved it would discard them, and has to say so.
+    static func dismissTitle(isFirstSetup: Bool, section: MeetingSettingsSection, hasUnsavedChanges: Bool) -> String {
+        if isFirstSetup { return "Not now" }
+        return section == .integrations && !hasUnsavedChanges ? "Close" : "Cancel"
     }
 
     private var canSave: Bool {
@@ -484,8 +500,11 @@ struct MeetingRecordingSettingsSheet: View {
                 HStack(spacing: self.theme.metrics.spacing.md) {
                     Spacer(minLength: self.theme.metrics.spacing.md)
                     Button(action: self.onCancel) {
-                        // Nothing on Integrations waits for Save, so the button there only closes.
-                        Text(self.isFirstSetup ? "Not now" : self.selectedSection == .integrations ? "Close" : "Cancel").frame(minWidth: 72)
+                        Text(Self.dismissTitle(
+                            isFirstSetup: self.isFirstSetup,
+                            section: self.selectedSection,
+                            hasUnsavedChanges: self.hasUnsavedChanges
+                        )).frame(minWidth: 72)
                     }
                     .meetingGlassAction()
                     .keyboardShortcut(.cancelAction)
