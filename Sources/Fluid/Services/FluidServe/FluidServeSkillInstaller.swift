@@ -53,6 +53,20 @@ nonisolated enum FluidServeSkillInstaller {
         }
     }
 
+    /// What a new chat is started with: enough for the agent to pick the skill, and nothing is sent until the user does.
+    static let starterPrompt = "Use the \(skillName) skill to list my recent meetings."
+
+    /// A link that opens a new Codex chat with `prompt` typed in but not sent.
+    /// The Codex app handles `codex://threads/new`; `mode=codex` picks the agent that reads local skills.
+    static func codexNewChatURL(prompt: String = starterPrompt) -> URL? {
+        var components = URLComponents()
+        components.scheme = "codex"
+        components.host = "threads"
+        components.path = "/new"
+        components.queryItems = [URLQueryItem(name: "prompt", value: prompt), URLQueryItem(name: "mode", value: "codex")]
+        return components.url
+    }
+
     /// The command inside this copy of the app, or nil for a build that does not ship it.
     static func bundledToolURL(bundle: Bundle = .main, fileManager: FileManager = .default) -> URL? {
         let url = bundle.bundleURL
