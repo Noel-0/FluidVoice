@@ -118,8 +118,10 @@ nonisolated enum FluidServeSkillInstaller {
     }
 
     /// The file's text, nil when it is missing. Bytes that are not UTF-8 read as empty, which is not ours.
+    /// A file that exists but cannot be read counts the same way, so it is never replaced.
     private static func text(at file: URL, fileManager: FileManager) -> String? {
-        guard let data = fileManager.contents(atPath: file.path) else { return nil }
+        guard fileManager.fileExists(atPath: file.path) else { return nil }
+        guard let data = fileManager.contents(atPath: file.path) else { return "" }
         return String(data: data, encoding: .utf8) ?? ""
     }
 
@@ -127,8 +129,8 @@ nonisolated enum FluidServeSkillInstaller {
         """
         ---
         name: \(self.skillName)
-        description: Read the user's FluidVoice meetings: list recent meetings, read a transcript or a saved summary, or search what was said. \
-        Use when the user mentions a meeting or call they recorded, asks what was discussed or decided, or wants notes or action items.
+        description: "Read the user's FluidVoice meetings - list recent meetings, read a transcript or a saved summary, or search what was said. \
+        Use when the user mentions a meeting or call they recorded, asks what was discussed or decided, or wants notes or action items."
         ---
         \(self.marker)
 
@@ -146,8 +148,8 @@ nonisolated enum FluidServeSkillInstaller {
 
         - `meet list [--since 7d] [--limit N]` - recent meetings, newest first: id, date, length, speakers, title, saved summaries.
         - `meet show <id|latest> [--from MM:SS] [--to MM:SS]` - the transcript, with speaker names and timestamps.
-        - `meet summary <id|latest> [--style NAME]` - summaries already written in FluidVoice.
-        - `meet search "text" [--since 7d] [--limit N]` - lines that mention the text, grouped by meeting.
+        - `meet summary <id|latest> [--style NAME]` - summaries already written in FluidVoice that still match the transcript.
+        - `meet search [--since 7d] [--limit N] text` - lines that mention the text, grouped by meeting.
         - `--json` on `list` or `show` gives structured output.
 
         An id is the first column of `meet list`. Its first characters are enough, and `latest` is the newest meeting.

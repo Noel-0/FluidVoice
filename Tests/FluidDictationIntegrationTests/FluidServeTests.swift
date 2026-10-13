@@ -104,14 +104,7 @@ final class FluidServeTests: XCTestCase {
     func testCommandListsShowsSearchesAndReadsSavedSummaries() throws {
         let session = self.session(title: "Weekly sync")
         try self.save(session)
-        let saved = MeetingSummaryController.SavedSummary(
-            transcriptHash: "hash",
-            modelID: "model",
-            text: "## Overview\nShort and clear.",
-            generatedAt: Date(timeIntervalSince1970: 1_700_000_500),
-            modelName: "Qwen3.5 9B"
-        )
-        try JSONEncoder().encode(saved).write(to: self.directory(for: session).appendingPathComponent("manual-summary-executive.json"))
+        try self.saveSummary("## Overview\nShort and clear.", style: "executive", for: session)
         let prefix = String(session.id.uuidString.prefix(8))
 
         let list = self.run("meet", "list")
@@ -134,6 +127,7 @@ final class FluidServeTests: XCTestCase {
         let search = self.run("meet", "search", "MERGED")
         XCTAssertEqual(search.exitCode, 0)
         XCTAssertTrue(search.output.contains("[00:20] Priya: merged speaker keeps the name"))
+        XCTAssertEqual(self.run("meet", "search", "speaker", "keeps").output, search.output, "Unquoted words are one phrase")
         XCTAssertTrue(self.run("meet", "search", "zebra").output.contains("No transcript mentions"))
 
         let summary = self.run("meet", "summary", "latest")
@@ -156,8 +150,57 @@ final class FluidServeTests: XCTestCase {
         XCTAssertEqual(self.run("meet", "list", "--limit", "0").exitCode, 1)
         XCTAssertEqual(self.run("meet", "erase", "latest").exitCode, 1)
         XCTAssertEqual(self.run("meet", "search").exitCode, 1)
+        XCTAssertEqual(self.run("meet", "show", "latest", "--from", "0:30", "--to", "0:10").exitCode, 1, "A backwards range is a mistake, not an empty answer")
+        XCTAssertEqual(self.run("meet", "list", "--since", "26-1-1").exitCode, 1, "A two-digit year must not quietly mean the year 26")
+        XCTAssertEqual(self.run("meet", "search", "--force").exitCode, 1)
+        XCTAssertEqual(self.run("meet", "search", "--", "--force").exitCode, 0, "-- lets a search begin with a dash")
         XCTAssertEqual(self.run("dictate").exitCode, 1)
         XCTAssertEqual(self.run().exitCode, 0)
+    }
+
+    func testASingleDashArgumentCannotSwitchAccessOn() throws {
+        try self.save(self.session(title: "Private planning"))
+        let sneaky = FluidServeCommand.run(
+            arguments: ["meet", "list", "-\(FluidServeMeetings.accessDefaultsKey)", "YES"],
+            root: self.root,
+            accessEnabled: false
+        )
+        XCTAssertEqual(sneaky.exitCode, 2)
+        XCTAssertFalse(sneaky.output.contains("Private planning"))
+        XCTAssertEqual(self.run("meet", "list", "-\(FluidServeMeetings.accessDefaultsKey)", "YES").exitCode, 1, "Even with access on, a stray dash option is an error")
+    }
+
+    func testOnlySummariesTheAppWouldStillShowAreServed() throws {
+        var session = self.session(title: "Weekly sync")
+        try self.save(session)
+        let entry = try XCTUnwrap(FluidServeMeetings.entries(root: self.root).first)
+        XCTAssertEqual(FluidServeMeetings.summaryInput(for: entry.meeting), MeetingSummaryInput.transcript(for: session), "Same text the app summarizes, so the same fingerprint")
+
+        try self.saveSummary("Current.", style: "executive", for: session)
+        try self.saveSummary("From a withdrawn model.", style: "topics", for: session, providerID: nil)
+        try self.saveSummary("For an older transcript.", style: "actions", for: session, transcriptHash: "stale")
+        XCTAssertEqual(FluidServeMeetings.savedSummaries(for: entry).map(\.style), ["executive"])
+
+        // Renaming a speaker changes the transcript, so the app hides the summary and so must the command.
+        session.speakers[0].displayName = "Priya R."
+        try self.save(session)
+        let renamed = try XCTUnwrap(FluidServeMeetings.entries(root: self.root).first)
+        XCTAssertEqual(FluidServeMeetings.savedSummaries(for: renamed), [])
+        XCTAssertEqual(self.run("meet", "summary", "latest").exitCode, 1)
+        XCTAssertFalse(self.run("meet", "summary", "latest").output.contains("Current."))
+    }
+
+    func testListKeepsLongAndEmojiTitlesWholeAndMeasuresAnInterruptedMeeting() throws {
+        var interrupted = self.session(title: "Sync 🚀🚀 with a much longer title than the heading")
+        interrupted.state = .interrupted
+        interrupted.endedAt = nil
+        try self.save(interrupted)
+
+        let list = self.run("meet", "list")
+        XCTAssertTrue(list.output.contains("Sync 🚀🚀 with a much longer title than the heading"))
+        let row = try XCTUnwrap(list.output.split(separator: "\n").last)
+        XCTAssertTrue(row.contains("  1 min  "), "With no end time the length comes from the last turn (35 s), not from zero or from now: \(row)")
+        XCTAssertEqual(try XCTUnwrap(FluidServeMeetings.entries(root: self.root).first).meeting.durationSeconds, 35)
     }
 
     func testCommandNeverChangesTheMeetingsFolder() throws {
@@ -189,7 +232,11 @@ final class FluidServeTests: XCTestCase {
         let file = FluidServeSkillInstaller.skillFile(for: agent, home: self.home)
         XCTAssertEqual(file.path, self.home.path + "/.claude/skills/fluidmeet/SKILL.md")
         let written = try String(contentsOf: file, encoding: .utf8)
-        XCTAssertTrue(written.hasPrefix("---\nname: fluidmeet\ndescription: "))
+        XCTAssertTrue(written.hasPrefix("---\nname: fluidmeet\ndescription: \""))
+        let description = try XCTUnwrap(written.split(separator: "\n").dropFirst(2).first)
+        XCTAssertTrue(description.hasSuffix("\""), "The description is one quoted line, so a colon inside it cannot break the header")
+        XCTAssertEqual(description.filter { $0 == "\"" }.count, 2)
+        XCTAssertEqual(written.split(separator: "\n", omittingEmptySubsequences: false)[3], "---")
         XCTAssertTrue(written.contains("\"\(tool)\" meet list"))
         XCTAssertEqual(FluidServeSkillInstaller.status(for: agent, toolPath: tool, home: self.home), .installed)
         XCTAssertFalse(FileManager.default.fileExists(atPath: self.home.appendingPathComponent(".codex").path), "Adding one tool's skill must not create the other tool's folder")
@@ -291,6 +338,31 @@ final class FluidServeTests: XCTestCase {
         XCTAssertEqual(model.notices[.claudeCode], .updated)
     }
 
+    func testASlowCheckThatFinishesLateDoesNotOverwriteANewerAnswer() async throws {
+        try FileManager.default.createDirectory(at: self.home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+        let tool = URL(fileURLWithPath: "/Applications/FluidVoice.app/Contents/Helpers/fv-serve")
+        let gate = FirstCallGate()
+        let model = FluidServeSettingsModel(home: self.home, toolURL: { tool }, selfCheck: { _ in
+            gate.holdFirstCall()
+            return .working(meetings: 2)
+        })
+
+        // The first refresh reads "not added", then waits inside the check.
+        let slow = Task { await model.refresh(accessEnabled: true) }
+        while !gate.firstCallIsWaiting {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        // Meanwhile the skill is added and a second refresh completes.
+        await model.install(.claudeCode, accessEnabled: true)
+        XCTAssertEqual(model.statuses[.claudeCode], .installed)
+        XCTAssertEqual(model.notices[.claudeCode], .added)
+
+        gate.release()
+        _ = await slow.value
+        XCTAssertEqual(model.statuses[.claudeCode], .installed, "The late, older answer must be dropped")
+        XCTAssertFalse(model.isChecking)
+    }
+
     func testTheCommandIsNotRunWhileAccessIsOff() async {
         let calls = CallCounter()
         let model = FluidServeSettingsModel(home: self.home, toolURL: { URL(fileURLWithPath: "/x/fv-serve") }, selfCheck: { _ in
@@ -346,6 +418,8 @@ final class FluidServeTests: XCTestCase {
         UserDefaults.standard.set(false, forKey: key)
         CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
         XCTAssertEqual(FluidServeSelfCheck.run(tool: tool), .accessOff)
+        let sneaky = try self.output(of: tool, ["status", "-\(key)", "YES"])
+        XCTAssertTrue(sneaky.contains("Meeting access: off"), "A defaults-style argument must not switch access on: \(sneaky)")
 
         UserDefaults.standard.set(true, forKey: key)
         CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
@@ -359,6 +433,31 @@ final class FluidServeTests: XCTestCase {
     }
 
     // MARK: - Fixtures
+
+    /// Holds the first caller until released; later callers pass straight through.
+    private final class FirstCallGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private let released = DispatchSemaphore(value: 0)
+        private var calls = 0
+        private var waiting = false
+
+        var firstCallIsWaiting: Bool {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return self.waiting
+        }
+
+        func holdFirstCall() {
+            self.lock.lock()
+            self.calls += 1
+            let isFirst = self.calls == 1
+            if isFirst { self.waiting = true }
+            self.lock.unlock()
+            if isFirst { self.released.wait() }
+        }
+
+        func release() { self.released.signal() }
+    }
 
     private final class CallCounter: @unchecked Sendable {
         private let lock = NSLock()
@@ -384,6 +483,37 @@ final class FluidServeTests: XCTestCase {
             accessEnabled: true,
             timeZone: TimeZone(secondsFromGMT: 0) ?? .current
         )
+    }
+
+    /// Writes a summary the way the app does. By default it is one the app would still show.
+    private func saveSummary(
+        _ text: String,
+        style: String,
+        for session: MeetingSession,
+        providerID: String? = "on-device",
+        transcriptHash: String? = nil
+    ) throws {
+        let saved = MeetingSummaryController.SavedSummary(
+            transcriptHash: transcriptHash ?? MeetingSummaryInput.fingerprint(MeetingSummaryInput.transcript(for: session)),
+            modelID: "model",
+            text: text,
+            providerID: providerID,
+            generatedAt: Date(timeIntervalSince1970: 1_700_000_500),
+            modelName: "Qwen3.5 9B"
+        )
+        try JSONEncoder().encode(saved).write(to: self.directory(for: session).appendingPathComponent("manual-summary-\(style).json"))
+    }
+
+    private func output(of tool: URL, _ arguments: [String]) throws -> String {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = tool
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     }
 
     private func directory(for session: MeetingSession) -> URL {

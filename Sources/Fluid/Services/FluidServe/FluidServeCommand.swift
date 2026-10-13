@@ -18,7 +18,7 @@ nonisolated enum FluidServeCommand {
       fv-serve meet list [--since 7d|24h|YYYY-MM-DD] [--limit N] [--json]
       fv-serve meet show <id|latest> [--from MM:SS] [--to MM:SS] [--json]
       fv-serve meet summary <id|latest> [--style NAME]
-      fv-serve meet search "text" [--since 7d|24h|YYYY-MM-DD] [--limit N]
+      fv-serve meet search [--since 7d|24h|YYYY-MM-DD] [--limit N] [--] text
       fv-serve status [--json]
 
     An id is the first column of `meet list`; its first characters are enough.
@@ -81,6 +81,11 @@ nonisolated enum FluidServeCommand {
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
+            if argument == "--" {
+                // Everything after `--` is text, so a search can begin with a dash.
+                options.positional.append(contentsOf: arguments[(index + 1)...])
+                break
+            }
             if valued.contains(argument) {
                 guard index + 1 < arguments.count else { throw UsageError(message: "\(argument) needs a value.") }
                 options.values[argument] = arguments[index + 1]
@@ -88,8 +93,8 @@ nonisolated enum FluidServeCommand {
             } else if flags.contains(argument) {
                 options.flags.insert(argument)
                 index += 1
-            } else if argument.hasPrefix("--") {
-                throw UsageError(message: "Unknown option \(argument).")
+            } else if argument.hasPrefix("-"), argument.count > 1 {
+                throw UsageError(message: "Unknown option \(argument). Put -- before text that begins with a dash.")
             } else {
                 options.positional.append(argument)
                 index += 1
@@ -148,6 +153,7 @@ nonisolated enum FluidServeCommand {
             )
             let from = try clock(options, "--from")
             let to = try clock(options, "--to")
+            if let from, let to, from > to { throw UsageError(message: "--from must be earlier than --to.") }
             if options.flags.contains("--json") {
                 var object = self.summaryObject(entry, fileManager: fileManager)
                 object["turns"] = entry.meeting.turns
@@ -173,13 +179,13 @@ nonisolated enum FluidServeCommand {
                 options.positional.first ?? "latest",
                 in: FluidServeMeetings.entries(root: root, fileManager: fileManager)
             )
-            var summaries = FluidServeMeetings.savedSummaries(in: entry.directory, fileManager: fileManager)
+            var summaries = FluidServeMeetings.savedSummaries(for: entry, fileManager: fileManager)
             if let style = options.values["--style"] {
                 summaries = summaries.filter { $0.style == style.lowercased() }
             }
             guard !summaries.isEmpty else {
                 return .failure(
-                    "No saved summary for this meeting. Summaries are written in FluidVoice; "
+                    "No current saved summary for this meeting. Summaries are written in FluidVoice; "
                         + "`\(FluidServeMeetings.toolName) meet show \(entry.meeting.id.uuidString.prefix(8))` prints the transcript."
                 )
             }
@@ -195,9 +201,9 @@ nonisolated enum FluidServeCommand {
 
         case "search":
             let options = try self.parse(rest, valued: ["--since", "--limit"], flags: [])
-            guard let query = options.positional.first, !query.trimmingCharacters(in: .whitespaces).isEmpty else {
-                throw UsageError(message: "Say what to search for.")
-            }
+            // Unquoted words are one phrase: `meet search budget review` looks for "budget review".
+            let query = options.positional.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else { throw UsageError(message: "Say what to search for.") }
             let hits = try FluidServeMeetings.search(
                 query,
                 in: FluidServeMeetings.entries(root: root, since: since(options), fileManager: fileManager),
@@ -234,7 +240,7 @@ nonisolated enum FluidServeCommand {
             "durationSeconds": meeting.durationSeconds.rounded(),
             "languageCode": meeting.languageCode,
             "speakers": meeting.activeSpeakers.map(\.displayName),
-            "summaries": FluidServeMeetings.savedSummaries(in: entry.directory, fileManager: fileManager).map(\.style),
+            "summaries": FluidServeMeetings.savedSummaries(for: entry, fileManager: fileManager).map(\.style),
         ]
     }
 

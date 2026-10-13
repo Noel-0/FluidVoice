@@ -9,8 +9,9 @@ nonisolated enum FluidServeSelfCheck {
         case failed(String)
     }
 
-    /// Blocking and bounded: call off the main thread. `fv-serve status` reads one small file per meeting.
-    static func run(tool: URL, timeout: TimeInterval = 3) -> Outcome {
+    /// Blocking and bounded: call it from a plain dispatch queue, never from the main thread or a Swift
+    /// concurrency thread. `fv-serve status` decodes every saved meeting, so a large library takes a while.
+    static func run(tool: URL, timeout: TimeInterval = 10) -> Outcome {
         let process = Process()
         let output = Pipe()
         process.executableURL = tool

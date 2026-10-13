@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Read-only view of saved meetings for the `fv-serve` command.
@@ -56,8 +57,10 @@ nonisolated enum FluidServeMeetings {
             self.speakers.filter { $0.mergedIntoSpeakerID == nil }
         }
 
+        /// A meeting that was interrupted has no end time; its last turn is the best measure of its length.
         var durationSeconds: TimeInterval {
-            max(0, (self.endedAt ?? self.startedAt).timeIntervalSince(self.startedAt))
+            if let endedAt = self.endedAt { return max(0, endedAt.timeIntervalSince(self.startedAt)) }
+            return self.turns.map(\.end.seconds).max() ?? 0
         }
 
         /// A meeting that is still being recorded or processed is not served.
@@ -111,9 +114,17 @@ nonisolated enum FluidServeMeetings {
             .appendingPathComponent("Meetings", isDirectory: true)
     }
 
-    /// The switch lives in the app's own preferences, so the command cannot be turned on from outside the app.
+    /// Reads the switch from the app's saved preferences and nowhere else. `UserDefaults` would also
+    /// honour a `-FluidServeMeetingAccessEnabled YES` argument, which would let a caller switch it on.
+    /// This is a consent switch, not a lock: anything running as the user could read the files anyway.
     static func isAccessEnabled(bundleIdentifier: String) -> Bool {
-        UserDefaults(suiteName: bundleIdentifier)?.bool(forKey: self.accessDefaultsKey) ?? false
+        let value = CFPreferencesCopyValue(
+            self.accessDefaultsKey as CFString,
+            bundleIdentifier as CFString,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost
+        )
+        return (value as? Bool) ?? false
     }
 
     // MARK: - Reading
@@ -154,20 +165,27 @@ nonisolated enum FluidServeMeetings {
         }
     }
 
-    static func savedSummaries(in directory: URL, fileManager: FileManager = .default) -> [SavedSummary] {
+    /// Saved summaries the app itself would still show for this meeting: written by a known provider
+    /// and for the transcript as it is now. A summary from before an edit or a speaker rename is left out.
+    static func savedSummaries(for entry: Entry, fileManager: FileManager = .default) -> [SavedSummary] {
         struct Stored: Decodable {
+            var transcriptHash: String
             var text: String
-            var modelName: String?
+            var providerID: String?
             var providerName: String?
+            var modelName: String?
             var generatedAt: Date?
         }
         let prefix = "manual-summary-"
-        let names = ((try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? [])
+        let names = ((try? fileManager.contentsOfDirectory(atPath: entry.directory.path)) ?? [])
             .filter { $0.hasPrefix(prefix) && $0.hasSuffix(".json") }
             .sorted()
+        guard !names.isEmpty else { return [] }
+        let currentHash = self.fingerprint(self.summaryInput(for: entry.meeting))
         return names.compactMap { name in
-            guard let data = try? Data(contentsOf: directory.appendingPathComponent(name, isDirectory: false)),
+            guard let data = try? Data(contentsOf: entry.directory.appendingPathComponent(name, isDirectory: false)),
                   let stored = try? JSONDecoder().decode(Stored.self, from: data),
+                  stored.providerID != nil, stored.transcriptHash == currentHash,
                   !stored.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { return nil }
             return SavedSummary(
@@ -177,6 +195,32 @@ nonisolated enum FluidServeMeetings {
                 generatedAt: stored.generatedAt
             )
         }
+    }
+
+    /// The exact text the app summarizes, rebuilt here only to recognise which saved summaries are current.
+    /// It uses this Mac's time zone because the app does, whatever zone the listing is printed in.
+    static func summaryInput(for meeting: Meeting) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateStyle = .long
+        formatter.timeStyle = .none
+        let date = formatter.string(from: meeting.startedAt)
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        let time = formatter.string(from: meeting.startedAt)
+        let minutes = max(0, (meeting.endedAt ?? meeting.startedAt).timeIntervalSince(meeting.startedAt) / 60)
+        return """
+        Title: \(meeting.title)
+        Date: \(date)
+        Time: \(time)
+        Duration: \(Int(minutes)) minutes
+        Participants: \(meeting.activeSpeakers.map(\.displayName).joined(separator: ", "))
+        ----------
+        """ + "\n" + meeting.turns.map { "**\(self.speakerLabel(for: $0, in: meeting))**: \($0.text)" }.joined(separator: "\n")
+    }
+
+    static func fingerprint(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Rendering
@@ -234,31 +278,27 @@ nonisolated enum FluidServeMeetings {
 
     static func listing(_ entries: [Entry], timeZone: TimeZone = .current, fileManager: FileManager = .default) -> String {
         guard !entries.isEmpty else { return "No finished meetings with a transcript were found." }
-        let titleWidth = max(5, entries.map(\.meeting.title.count).max() ?? 5)
-        func row(_ id: String, _ date: String, _ length: String, _ speakers: String, _ title: String, _ summaries: String) -> String {
-            [
-                id.padding(toLength: 8, withPad: " ", startingAt: 0),
-                date.padding(toLength: 16, withPad: " ", startingAt: 0),
-                length.padding(toLength: 7, withPad: " ", startingAt: 0),
-                speakers.padding(toLength: 8, withPad: " ", startingAt: 0),
-                title.padding(toLength: titleWidth, withPad: " ", startingAt: 0),
-                summaries,
-            ].joined(separator: "  ")
-        }
-        var lines = [row("ID", "DATE", "LENGTH", "SPEAKERS", "TITLE", "SUMMARIES")]
+        var rows = [["ID", "DATE", "LENGTH", "SPEAKERS", "TITLE", "SUMMARIES"]]
         for entry in entries {
             let meeting = entry.meeting
-            let summaries = self.savedSummaries(in: entry.directory, fileManager: fileManager).map(\.style)
-            lines.append(row(
+            let summaries = self.savedSummaries(for: entry, fileManager: fileManager).map(\.style)
+            rows.append([
                 String(meeting.id.uuidString.prefix(8)),
                 self.dateText(meeting.startedAt, timeZone: timeZone),
                 self.lengthText(meeting.durationSeconds),
                 String(meeting.activeSpeakers.count),
                 meeting.title,
-                summaries.isEmpty ? "-" : summaries.joined(separator: ", ")
-            ))
+                summaries.isEmpty ? "-" : summaries.joined(separator: ", "),
+            ])
         }
-        return lines.joined(separator: "\n")
+        // Widths are counted in characters and cells are only ever widened, so an emoji or a long
+        // value is never cut. The last column is left unpadded.
+        let widths = (0..<5).map { column in rows.map { $0[column].count }.max() ?? 0 }
+        return rows.map { row in
+            row.enumerated().map { index, cell in
+                index < widths.count ? cell + String(repeating: " ", count: widths[index] - cell.count) : cell
+            }.joined(separator: "  ")
+        }.joined(separator: "\n")
     }
 
     /// Case-insensitive search through transcripts, newest meeting first, stopping at `limit` lines.
@@ -308,9 +348,12 @@ nonisolated enum FluidServeMeetings {
             default: break
             }
         }
+        // Four-digit year only: "26-1-1" would otherwise parse as the year 26 and filter nothing.
+        guard value.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = timeZone
+        formatter.isLenient = false
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.date(from: value)
     }
