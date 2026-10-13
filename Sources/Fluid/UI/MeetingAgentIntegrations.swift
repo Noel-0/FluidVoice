@@ -6,8 +6,8 @@ import SwiftUI
 /// File checks, writes and the command run happen off the main thread, and only when the page
 /// appears or the user presses a button; nothing polls.
 ///
-/// There is no separate switch. Meetings are shared from the moment an agent is added here, and
-/// stop being shared when the last skill is removed.
+/// There is no separate switch. Meetings are shared while Claude Code or Codex has the skill, or
+/// while the user has copied instructions for another agent and not stopped that since.
 @MainActor
 final class FluidServeSettingsModel: ObservableObject {
     typealias Agent = FluidServeSkillInstaller.Agent
@@ -33,6 +33,9 @@ final class FluidServeSettingsModel: ObservableObject {
     private var issueAgent: Agent?
     /// True once the instructions for another agent are on the clipboard, so the row can say so.
     @Published private(set) var copiedAgentInstructions = false
+    /// Whether meetings are shared with agents FluidVoice cannot see. Those agents keep their own
+    /// copy of the skill, so only the user can say when this ends.
+    @Published private(set) var otherAgentsShared = false
 
     private let home: URL
     private let toolURL: () -> URL?
@@ -40,8 +43,15 @@ final class FluidServeSettingsModel: ObservableObject {
     private let copyToClipboard: (String) -> Bool
     private let isSharing: () -> Bool
     private let setSharing: (Bool) -> Void
+    private let isOtherAgentsShared: () -> Bool
+    private let setOtherAgentsShared: (Bool) -> Void
     /// Counts refreshes so a slow one that finishes late cannot overwrite a newer answer.
     private var refreshGeneration = 0
+    /// The state found on first look is adopted once. After that only the user's presses change it.
+    private var adoptedStateFoundOnDisk = false
+    /// The latest add, remove or stop. Each waits for the one before it, so a slow one cannot
+    /// finish late and undo what a quicker one decided about sharing.
+    private var lastChange: Task<Void, Never>?
 
     init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -52,7 +62,9 @@ final class FluidServeSettingsModel: ObservableObject {
             return NSPasteboard.general.setString(text, forType: .string)
         },
         isSharing: @escaping () -> Bool = { SettingsStore.shared.fluidServeMeetingAccessEnabled },
-        setSharing: @escaping (Bool) -> Void = { SettingsStore.shared.fluidServeMeetingAccessEnabled = $0 }
+        setSharing: @escaping (Bool) -> Void = { SettingsStore.shared.fluidServeMeetingAccessEnabled = $0 },
+        isOtherAgentsShared: @escaping () -> Bool = { SettingsStore.shared.fluidServeOtherAgentsShared },
+        setOtherAgentsShared: @escaping (Bool) -> Void = { SettingsStore.shared.fluidServeOtherAgentsShared = $0 }
     ) {
         self.home = home
         self.toolURL = toolURL
@@ -60,6 +72,9 @@ final class FluidServeSettingsModel: ObservableObject {
         self.copyToClipboard = copyToClipboard
         self.isSharing = isSharing
         self.setSharing = setSharing
+        self.isOtherAgentsShared = isOtherAgentsShared
+        self.setOtherAgentsShared = setOtherAgentsShared
+        self.otherAgentsShared = isOtherAgentsShared()
     }
 
     /// Puts a short message on the clipboard for any coding agent the page has no row for, and
@@ -77,8 +92,42 @@ final class FluidServeSettingsModel: ObservableObject {
             return
         }
         if self.issueAgent == nil { self.issue = nil }
+        self.setOtherAgentsShared(true)
+        self.otherAgentsShared = true
         self.setSharing(true)
         Task { await self.refresh() }
+    }
+
+    /// Ends sharing with agents set up from copied instructions. Meetings stay shared only if
+    /// Claude Code or Codex still has the skill.
+    func stopSharingWithOtherAgents() async {
+        await self.inTurn {
+            self.adoptedStateFoundOnDisk = true
+            self.setOtherAgentsShared(false)
+            self.otherAgentsShared = false
+            self.copiedAgentInstructions = false
+            let onDisk = await self.refresh()
+            self.applySharing(for: onDisk)
+            await self.refresh()
+        }
+    }
+
+    /// Runs one change after the changes already under way have finished.
+    private func inTurn(_ work: @escaping @MainActor () async -> Void) async {
+        let previous = self.lastChange
+        let task = Task { @MainActor in
+            await previous?.value
+            await work()
+        }
+        self.lastChange = task
+        await task.value
+    }
+
+    /// Meetings are shared exactly while some agent is entitled to read them.
+    private func applySharing(for statuses: [Agent: Status]) {
+        let anySkill = statuses.values.contains { $0 == .installed || $0 == .needsUpdate }
+        let shouldShare = anySkill || self.isOtherAgentsShared()
+        if self.isSharing() != shouldShare { self.setSharing(shouldShare) }
     }
 
     /// Returns what it read from disk, so a caller can confirm its own change even when a newer
@@ -103,6 +152,14 @@ final class FluidServeSettingsModel: ObservableObject {
             return (statuses, codexApp != nil, check)
         }
         guard generation == self.refreshGeneration else { return found.0 }
+        // Sharing found on with no skill installed means an agent was set up some other way, or a
+        // skill file was deleted by hand. Show it as shared with other agents so it can be stopped.
+        if !self.adoptedStateFoundOnDisk {
+            self.adoptedStateFoundOnDisk = true
+            let anySkill = found.0.values.contains { $0 == .installed || $0 == .needsUpdate }
+            if sharing, !anySkill, !self.isOtherAgentsShared() { self.setOtherAgentsShared(true) }
+        }
+        self.otherAgentsShared = self.isOtherAgentsShared()
         self.statuses = found.0
         self.codexAppIsInstalled = found.1
         self.check = found.2
@@ -132,27 +189,31 @@ final class FluidServeSettingsModel: ObservableObject {
             self.issue = FluidServeSkillInstaller.InstallError.toolMissing.localizedDescription
             return
         }
-        let wasPresent = self.statuses[agent] == .needsUpdate
-        await self.change(agent, notice: wasPresent ? .updated : .added, expecting: .installed) { home in
-            try FluidServeSkillInstaller.install(for: agent, toolPath: tool.path, home: home)
+        await self.inTurn {
+            let wasPresent = self.statuses[agent] == .needsUpdate
+            await self.change(agent, notice: wasPresent ? .updated : .added, expecting: .installed) { home in
+                try FluidServeSkillInstaller.install(for: agent, toolPath: tool.path, home: home)
+            }
         }
     }
 
     func remove(_ agent: Agent) async {
-        await self.change(agent, notice: .removed, expecting: .notInstalled) { home in
-            try FluidServeSkillInstaller.remove(for: agent, home: home)
+        await self.inTurn {
+            await self.change(agent, notice: .removed, expecting: .notInstalled) { home in
+                try FluidServeSkillInstaller.remove(for: agent, home: home)
+            }
         }
     }
 
     /// Does the work, re-reads the disk, and only then says it worked: the notice is shown when the
-    /// file is really in the state the button promised. Sharing follows the skills: on once one is
-    /// added, off once none is left.
+    /// file is really in the state the button promised. Sharing then follows who still has access.
     private func change(
         _ agent: Agent,
         notice: Notice,
         expecting expected: Status,
         _ work: @escaping @Sendable (URL) throws -> Void
     ) async {
+        self.adoptedStateFoundOnDisk = true
         let home = self.home
         let failure: String? = await Self.offThePool {
             do {
@@ -165,11 +226,9 @@ final class FluidServeSettingsModel: ObservableObject {
         var onDisk = await self.refresh()
         let succeeded = failure == nil && onDisk[agent] == expected
         if succeeded {
-            let anySkillLeft = onDisk.values.contains { $0 == .installed || $0 == .needsUpdate }
-            if self.isSharing() != anySkillLeft {
-                self.setSharing(anySkillLeft)
-                onDisk = await self.refresh()
-            }
+            let wasSharing = self.isSharing()
+            self.applySharing(for: onDisk)
+            if self.isSharing() != wasSharing { onDisk = await self.refresh() }
             self.notices[agent] = notice
             if self.issueAgent == agent || self.issueAgent == nil { self.issue = nil }
             if self.issueAgent == agent { self.issueAgent = nil }
@@ -300,9 +359,15 @@ struct MeetingAgentIntegrations: View {
                     .font(self.theme.typography.bodyStrong)
                     .foregroundStyle(self.theme.palette.primaryText)
                 if self.model.copiedAgentInstructions {
-                    Label("Copied. Paste it into your agent.", systemImage: "checkmark.circle.fill")
+                    Label("Copied. Now paste it.", systemImage: "checkmark.circle.fill")
                         .font(self.theme.typography.caption)
                         .foregroundStyle(Color.fluidGreen)
+                        .lineLimit(1)
+                } else if self.model.otherAgentsShared {
+                    Label("Sharing is on", systemImage: "checkmark.circle.fill")
+                        .font(self.theme.typography.caption)
+                        .foregroundStyle(Color.fluidGreen)
+                        .lineLimit(1)
                 } else {
                     Text("Cursor, Gemini and others")
                         .font(self.theme.typography.caption)
@@ -312,6 +377,11 @@ struct MeetingAgentIntegrations: View {
             Spacer(minLength: self.theme.metrics.spacing.md)
             Button("Copy instructions") { self.model.copyAgentInstructions() }
                 .meetingGlassAction()
+            if self.model.otherAgentsShared {
+                Button("Stop sharing") { Task { await self.model.stopSharingWithOtherAgents() } }
+                    .meetingGlassAction()
+                    .help("Agents you set up from copied instructions can no longer read your meetings.")
+            }
         }
         .padding(.vertical, self.theme.metrics.spacing.sm)
         .accessibilityElement(children: .contain)

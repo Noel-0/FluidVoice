@@ -16,6 +16,7 @@ final class FluidServeTests: XCTestCase {
         try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.home, withIntermediateDirectories: true)
         self.sharing.value = false
+        self.sharing.otherAgents = false
     }
 
     override func tearDownWithError() throws {
@@ -403,6 +404,80 @@ final class FluidServeTests: XCTestCase {
         XCTAssertNil(model.check)
     }
 
+    func testAnAgentSetUpFromCopiedInstructionsKeepsAccessUntilTheUserStopsIt() async throws {
+        try FileManager.default.createDirectory(at: self.home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+        let model = self.model(tool: URL(fileURLWithPath: "/x/fv-serve"))
+        await model.install(.claudeCode)
+        model.copyAgentInstructions()
+        XCTAssertTrue(model.otherAgentsShared)
+
+        // Removing the last skill FluidVoice can see must not cut off the agent it cannot see.
+        await model.remove(.claudeCode)
+        XCTAssertEqual(model.statuses[.claudeCode], .notInstalled)
+        XCTAssertTrue(self.sharing.value)
+        XCTAssertTrue(model.otherAgentsShared)
+
+        await model.stopSharingWithOtherAgents()
+        XCTAssertFalse(model.otherAgentsShared)
+        XCTAssertFalse(self.sharing.otherAgents)
+        XCTAssertFalse(self.sharing.value, "With no skill left and other agents stopped, nothing is shared")
+        XCTAssertNil(model.check)
+    }
+
+    func testStoppingOtherAgentsLeavesSharingOnForAnAgentThatStillHasTheSkill() async throws {
+        try FileManager.default.createDirectory(at: self.home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+        let model = self.model(tool: URL(fileURLWithPath: "/x/fv-serve"))
+        await model.install(.claudeCode)
+        model.copyAgentInstructions()
+
+        await model.stopSharingWithOtherAgents()
+        XCTAssertFalse(model.otherAgentsShared)
+        XCTAssertTrue(self.sharing.value, "Claude Code still has the skill")
+    }
+
+    func testSharingLeftOnByAnEarlierBuildWithNoSkillsShowsAsOtherAgentsSoItCanBeStopped() async {
+        self.sharing.value = true
+        let model = self.model(tool: URL(fileURLWithPath: "/x/fv-serve"))
+        XCTAssertFalse(model.otherAgentsShared)
+
+        await model.refresh()
+        XCTAssertTrue(model.otherAgentsShared)
+        XCTAssertTrue(self.sharing.otherAgents)
+
+        await model.stopSharingWithOtherAgents()
+        XCTAssertFalse(self.sharing.value)
+    }
+
+    func testASlowRemoveCannotSwitchSharingOffAfterAnotherAgentWasAdded() async throws {
+        for folder in [".claude", ".codex"] {
+            try FileManager.default.createDirectory(at: self.home.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        let tool = URL(fileURLWithPath: "/x/fv-serve")
+        try FluidServeSkillInstaller.install(for: .claudeCode, toolPath: tool.path, home: self.home)
+        self.sharing.value = true
+        let gate = FirstCallGate()
+        let model = self.model(tool: tool, check: { _ in
+            gate.holdFirstCall()
+            return .working(meetings: 0)
+        })
+
+        // The remove has read "no skill anywhere" and is stuck waiting on the meeting reader.
+        let remove = Task { await model.remove(.claudeCode) }
+        while !gate.firstCallIsWaiting {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        let add = Task { await model.install(.codex) }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        gate.release()
+        await remove.value
+        await add.value
+
+        XCTAssertEqual(model.statuses[.codex], .installed)
+        XCTAssertTrue(self.sharing.value, "Codex has the skill, so meetings stay shared")
+        XCTAssertFalse(model.otherAgentsShared, "A remove must not be read as another agent being set up")
+        XCTAssertNotNil(model.check)
+    }
+
     func testSharingStaysOnWhileAnyAgentStillHasTheSkill() async throws {
         for folder in [".claude", ".codex"] {
             try FileManager.default.createDirectory(at: self.home.appendingPathComponent(folder), withIntermediateDirectories: true)
@@ -554,6 +629,7 @@ final class FluidServeTests: XCTestCase {
 
     private final class SharingBox {
         var value = false
+        var otherAgents = false
     }
 
     private func model(
@@ -568,7 +644,9 @@ final class FluidServeTests: XCTestCase {
             selfCheck: check,
             copyToClipboard: copy,
             isSharing: { sharing.value },
-            setSharing: { sharing.value = $0 }
+            setSharing: { sharing.value = $0 },
+            isOtherAgentsShared: { sharing.otherAgents },
+            setOtherAgentsShared: { sharing.otherAgents = $0 }
         )
     }
 
