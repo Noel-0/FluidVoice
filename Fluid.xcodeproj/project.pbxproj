@@ -332,6 +332,7 @@
 			membershipExceptions = (
 				Services/FluidServe/FluidServeCommand.swift,
 				Services/FluidServe/FluidServeMeetings.swift,
+				Services/FluidServe/FluidServeSkill.swift,
 			);
 			target = F5E000000000000000000001 /* fv-serve */;
 		};

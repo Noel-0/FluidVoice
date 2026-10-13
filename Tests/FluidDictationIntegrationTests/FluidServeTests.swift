@@ -265,6 +265,47 @@ final class FluidServeTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), theirs)
     }
 
+    func testSkillCommandPrintsExactlyWhatTheAppInstallsEvenWithAccessOff() throws {
+        let tool = "/Applications/FluidVoice.app/Contents/Helpers/fv-serve"
+        try self.save(self.session(title: "Private planning"))
+        let printed = FluidServeCommand.run(arguments: ["skill"], root: self.root, accessEnabled: false, toolPath: tool)
+
+        XCTAssertEqual(printed.exitCode, 0)
+        XCTAssertEqual(printed.output + "\n", FluidServeSkillInstaller.skillDocument(toolPath: tool), "Saved to a file, it is the same skill the buttons install")
+        XCTAssertFalse(printed.output.contains("Private planning"), "The skill text carries no meeting data")
+
+        // Saved by an agent into a skills folder, the app recognises it as its own and up to date.
+        let file = FluidServeSkillInstaller.skillFile(for: .claudeCode, home: self.home)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data((printed.output + "\n").utf8).write(to: file)
+        XCTAssertEqual(FluidServeSkillInstaller.status(for: .claudeCode, toolPath: tool, home: self.home), .installed)
+    }
+
+    func testCopyInstructionsGivesAnAgentTheCommandAndSaysCopiedOnlyIfItWas() {
+        let tool = URL(fileURLWithPath: "/Applications/Fluid Voice.app/Contents/Helpers/fv-serve")
+        var clipboard: String?
+        let model = FluidServeSettingsModel(home: self.home, toolURL: { tool }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: {
+            clipboard = $0
+            return true
+        })
+        XCTAssertFalse(model.copiedAgentInstructions)
+        model.copyAgentInstructions()
+        XCTAssertTrue(model.copiedAgentInstructions)
+        XCTAssertNil(model.issue)
+        XCTAssertEqual(clipboard, FluidServeSkill.agentInstructions(toolPath: tool.path))
+        XCTAssertEqual(clipboard?.contains("\"/Applications/Fluid Voice.app/Contents/Helpers/fv-serve\" skill"), true, "The path is quoted, so a space in it still works")
+        XCTAssertEqual(clipboard?.contains("fluidmeet"), true)
+
+        let refused = FluidServeSettingsModel(home: self.home, toolURL: { tool }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: { _ in false })
+        refused.copyAgentInstructions()
+        XCTAssertFalse(refused.copiedAgentInstructions)
+        XCTAssertNotNil(refused.issue)
+
+        let missing = FluidServeSettingsModel(home: self.home, toolURL: { nil }, selfCheck: { _ in .working(meetings: 0) }, copyToClipboard: { _ in true })
+        missing.copyAgentInstructions()
+        XCTAssertFalse(missing.copiedAgentInstructions, "Nothing to copy when this build has no fv-serve")
+    }
+
     func testCodexLinkOpensANewChatWithThePromptTypedIn() throws {
         let url = try XCTUnwrap(FluidServeSkillInstaller.codexNewChatURL(prompt: "List my meetings & notes?"))
         XCTAssertEqual(url.scheme, "codex")
@@ -426,6 +467,10 @@ final class FluidServeTests: XCTestCase {
         guard case .working = FluidServeSelfCheck.run(tool: tool) else {
             return XCTFail("With the switch on, the bundled command must answer: \(FluidServeSelfCheck.run(tool: tool))")
         }
+
+        // The real program reports its own real location, which is what a pasted command must contain.
+        let printed = try self.output(of: tool, ["skill"])
+        XCTAssertEqual(printed, FluidServeSkillInstaller.skillDocument(toolPath: tool.resolvingSymlinksInPath().path))
 
         guard case .failed = FluidServeSelfCheck.run(tool: URL(fileURLWithPath: "/nonexistent/fv-serve")) else {
             return XCTFail("A missing command must be reported as a failure")
