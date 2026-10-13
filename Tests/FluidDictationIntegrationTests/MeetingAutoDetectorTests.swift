@@ -84,6 +84,7 @@ private final class FakeActivityGate: DetectionActivityGate {
 private final class ToggleFlags {
     var nativeEnabled = true
     var browserEnabled = true
+    var lastSpeechAt: Date?
 }
 
 @MainActor
@@ -121,6 +122,7 @@ private final class DetectorHarness {
             clock: self.clock,
             isNativeDetectionEnabled: { flags.nativeEnabled },
             isBrowserDetectionEnabled: { flags.browserEnabled },
+            lastSpeechAt: { flags.lastSpeechAt },
             rejectionLogger: rejectionLogger
         )
         self.detector.onPromptRequested = { [weak self] request in self?.prompts.append(request) }
@@ -1295,6 +1297,44 @@ final class MeetingAutoDetectorTests: XCTestCase {
         h.advance(60)
         h.detector.tick(at: h.clock.now())
         XCTAssertEqual(h.nudges, 1)
+    }
+
+    func testTheQuestionWaitsWhilePeopleAreStillTalking() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmTeams())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.detector.handleAudioProcessActivity(false, pid: 300, at: h.clock.now())
+
+        // The call dropped but the people in the room carry on.
+        for _ in 0..<10 {
+            h.advance(30)
+            h.flags.lastSpeechAt = h.clock.now().addingTimeInterval(-5)
+            h.detector.tick(at: h.clock.now())
+        }
+        XCTAssertEqual(h.nudges, 0)
+
+        h.advance(MeetingAutoDetector.speechQuietSeconds - 10)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0, "45 seconds of quiet are not up yet")
+
+        h.advance(10)
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 1)
+    }
+
+    func testTalkingAloneNeverAsksAndQuietAloneNeverAsks() throws {
+        let h = DetectorHarness()
+        let episodeID = try XCTUnwrap(h.confirmTeams())
+        XCTAssertTrue(h.detector.startTapped(episodeID: episodeID))
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+
+        // A long silence in a call that is still connected is just a quiet meeting.
+        h.flags.lastSpeechAt = h.clock.now()
+        h.advance(1800)
+        h.detector.handleAudioProcessActivity(true, pid: 300, at: h.clock.now())
+        h.detector.tick(at: h.clock.now())
+        XCTAssertEqual(h.nudges, 0)
     }
 
     func testNothingIsAskedOnceOurRecordingHasStopped() throws {

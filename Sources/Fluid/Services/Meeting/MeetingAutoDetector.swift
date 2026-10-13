@@ -18,6 +18,9 @@ final class MeetingAutoDetector {
     /// How long the meeting app must have let go of its audio, or been gone, before we ask whether
     /// the meeting ended. Short blips (a device switch, a crash and relaunch) stay under it.
     static let endSignalGraceSeconds: TimeInterval = 20
+    /// People still talking means the meeting is not over for them, whatever the app did. The
+    /// question waits until nobody has said anything for this long.
+    static let speechQuietSeconds: TimeInterval = 45
     static let dismissalSuppressionSeconds: TimeInterval = 30 * 60
     static let rollingDismissalWindowSeconds: TimeInterval = 14 * 24 * 3600
     static let dismissalCountThreshold = 3
@@ -121,6 +124,7 @@ final class MeetingAutoDetector {
     private let clock: any MeetingClockProviding
     private let isNativeDetectionEnabled: () -> Bool
     private let isBrowserDetectionEnabled: () -> Bool
+    private let lastSpeechAt: () -> Date?
     private let rejectionLogger: (String) -> Void
     private var lastLoggedRejectionByPID: [Int32: String] = [:]
 
@@ -156,6 +160,7 @@ final class MeetingAutoDetector {
         clock: any MeetingClockProviding,
         isNativeDetectionEnabled: @escaping () -> Bool,
         isBrowserDetectionEnabled: @escaping () -> Bool,
+        lastSpeechAt: @escaping () -> Date? = { nil },
         rejectionLogger: @escaping (String) -> Void = { DebugLogger.shared.log($0, source: "MeetingAutoDetector") }
     ) {
         self.workspaceEvents = workspaceEvents
@@ -167,6 +172,7 @@ final class MeetingAutoDetector {
         self.clock = clock
         self.isNativeDetectionEnabled = isNativeDetectionEnabled
         self.isBrowserDetectionEnabled = isBrowserDetectionEnabled
+        self.lastSpeechAt = lastSpeechAt
         self.rejectionLogger = rejectionLogger
     }
 
@@ -384,6 +390,9 @@ final class MeetingAutoDetector {
     func handleAudioProcessActivity(_ isActive: Bool, pid: Int32, at now: Date) {
         guard var record = self.records[pid], record.tier == .nativeTier1 else { return }
         record.processAudioObserved = true
+        if isActive, self.watchedRecording?.pid == pid, self.watchedRecording?.incarnation == record.incarnation {
+            self.watchedRecording?.sawProcessAudio = true
+        }
         if isActive, record.processAudioWasActive {
             // A continuous stream is still fresh evidence. Refreshing here allows a late window
             // snapshot/activation to confirm without synthesizing duplicate episodes.
@@ -780,7 +789,6 @@ final class MeetingAutoDetector {
         let askAt: Date?
         if let record = self.records[watched.pid], watched.incarnation == nil || record.incarnation == watched.incarnation {
             watched.appGoneAt = nil
-            if record.processAudioWasActive { watched.sawProcessAudio = true }
             var moments: [Date] = []
             if record.windowEvidenceAt == nil, let windowLostAt = record.windowLostAt {
                 moments.append(windowLostAt.addingTimeInterval(Self.micReleaseEpisodeEndSeconds))
@@ -797,7 +805,9 @@ final class MeetingAutoDetector {
             watched.appGoneAt = goneAt
             askAt = goneAt.addingTimeInterval(Self.endSignalGraceSeconds)
         }
-        let shouldAsk = askAt.map { now >= $0 } == true && !watched.asked
+        // Without live captions there is no speech to wait for, and the app's own signal decides.
+        let stillTalking = self.lastSpeechAt().map { now.timeIntervalSince($0) < Self.speechQuietSeconds } == true
+        let shouldAsk = askAt.map { now >= $0 } == true && !stillTalking && !watched.asked
         if shouldAsk { watched.asked = true }
         self.watchedRecording = watched
         if shouldAsk {

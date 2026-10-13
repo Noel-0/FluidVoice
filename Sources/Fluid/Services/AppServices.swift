@@ -172,7 +172,8 @@ final class AppServices: ObservableObject {
             isNativeDetectionEnabled: { SettingsStore.shared.meetingAutoDetectEnabled },
             isBrowserDetectionEnabled: {
                 SettingsStore.shared.meetingAutoDetectEnabled && SettingsStore.shared.meetingAutoDetectBrowserEnabled
-            }
+            },
+            lastSpeechAt: { [weak self] in self?._meetingSessionCoordinator?.lastLiveSpeechAt }
         )
         self._meetingAutoDetector = detector
         self.wireMeetingAutoDetector(detector)
