@@ -157,7 +157,7 @@ struct MeetingRecordingSettingsSheet: View {
                     HStack(spacing: self.theme.metrics.spacing.sm) {
                         Image(systemName: section.symbol)
                             .frame(width: self.theme.metrics.spacing.lg)
-                            .foregroundStyle(self.theme.palette.secondaryText)
+                            .foregroundStyle(self.selectedSection == section ? self.theme.palette.accent : self.theme.palette.secondaryText)
                         Text(section.rawValue)
                             .font(self.selectedSection == section ? self.theme.typography.bodySmallStrong : self.theme.typography.bodySmall)
                             .foregroundStyle(self.theme.palette.primaryText)
@@ -167,13 +167,19 @@ struct MeetingRecordingSettingsSheet: View {
                     .padding(.horizontal, self.theme.metrics.spacing.md)
                     .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
                     .padding(.vertical, self.theme.metrics.spacing.xs)
+                    // The selected tab uses the app's selected-row tint, so it reads as "you are here"
+                    // and not as one more hover outline.
                     .background(
-                        self.selectedSection == section ? self.theme.palette.cardBackground : Color.clear,
+                        self.selectedSection == section
+                            ? self.theme.palette.accent.opacity(self.theme.metrics.pickerControl.selectedRowOpacity)
+                            : Color.clear,
                         in: RoundedRectangle(cornerRadius: self.theme.metrics.corners.sm)
                     )
                     .contentShape(RoundedRectangle(cornerRadius: self.theme.metrics.corners.sm))
                 }
                 .buttonStyle(.plain)
+                // The keyboard focus ring otherwise sits on the first tab whichever tab is open.
+                .focusEffectDisabled()
                 .meetingHoverFeedback(cornerRadius: self.theme.metrics.corners.sm)
                 .accessibilityAddTraits(self.selectedSection == section ? .isSelected : [])
             }
