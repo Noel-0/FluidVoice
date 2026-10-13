@@ -32,7 +32,11 @@ nonisolated enum MeetingSummaryInput {
         formatter.dateStyle = .none
         formatter.timeStyle = .short
         let time = formatter.string(from: session.startedAt)
-        let duration = max(0, (session.endedAt ?? session.startedAt).timeIntervalSince(session.startedAt) / 60)
+        // A saved meeting keeps whole seconds. Count the same way here, so the text (and the fingerprint
+        // that decides whether a saved summary is still shown) is the same before and after a restart.
+        let startSeconds = session.startedAt.timeIntervalSinceReferenceDate.rounded(.down)
+        let endSeconds = (session.endedAt ?? session.startedAt).timeIntervalSinceReferenceDate.rounded(.down)
+        let duration = max(0, (endSeconds - startSeconds) / 60)
         let turns = session.transcriptSegments.filter { !$0.isEcho }.sorted { $0.start.seconds < $1.start.seconds }
         return """
         Title: \(session.title)
