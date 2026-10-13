@@ -61,6 +61,29 @@ final class MeetingSummaryProviderTests: XCTestCase {
         XCTAssertEqual(restored.modelName, "Local Model")
     }
 
+    func testDictationWritesOnlyIntoEditorsThatOptedIn() {
+        func editor(in container: NSView, frame: NSRect) -> NSTextView {
+            let scroll = NSScrollView(frame: frame)
+            let text = NSTextView(frame: NSRect(origin: .zero, size: frame.size))
+            scroll.documentView = text
+            container.addSubview(scroll)
+            return text
+        }
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        let marked = NSView(frame: NSRect(x: 20, y: 20, width: 300, height: 120))
+        root.addSubview(marked)
+        let marker = DictationTextTarget.Marker(frame: marked.bounds)
+        marked.addSubview(marker)
+        let optedIn = editor(in: marked, frame: marked.bounds)
+        XCTAssertTrue(DictationTextTarget.accepts(optedIn))
+
+        let other = editor(in: root, frame: NSRect(x: 340, y: 20, width: 200, height: 120))
+        XCTAssertFalse(DictationTextTarget.accepts(other), "An editor elsewhere in the window is left alone")
+        optedIn.isEditable = false
+        XCTAssertFalse(DictationTextTarget.accepts(optedIn), "A read-only editor takes no dictation")
+        XCTAssertNil(marker.hitTest(NSPoint(x: 5, y: 5)), "The marker never takes clicks from the editor")
+    }
+
     func testLegacySummaryLoadsWithoutProviderMetadata() throws {
         let data = Data(#"{"transcriptHash":"old","modelID":"local-summary","text":"Previous summary"}"#.utf8)
         let saved = try JSONDecoder().decode(MeetingSummaryController.SavedSummary.self, from: data)
