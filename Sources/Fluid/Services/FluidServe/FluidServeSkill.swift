@@ -6,6 +6,12 @@ nonisolated enum FluidServeSkill {
     static let name = "fluidmeet"
     static let marker = "<!-- Installed by FluidVoice. Remove it in FluidVoice: Settings > Experimental > Fluid Server. -->"
 
+    /// The path as one shell word. Single quotes keep spaces, `$`, backticks and double quotes
+    /// literal, so an oddly named app folder cannot change what a pasted command runs.
+    static func shellQuoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     /// A short message to paste into any coding agent. The agent runs the command and files the
     /// skill wherever it keeps skills or rules, so FluidVoice does not need to know that agent's layout.
     static func agentInstructions(toolPath: String) -> String {
@@ -14,7 +20,7 @@ nonisolated enum FluidServeSkill {
 
         Run this command. It prints a skill file:
 
-        "\(toolPath)" skill
+        \(self.shellQuoted(toolPath)) skill
 
         Save the output as a skill named "\(self.name)" (a SKILL.md file in your skills folder). \
         If you do not use skill files, add the output to your rules or instructions file instead. \
@@ -35,10 +41,10 @@ nonisolated enum FluidServeSkill {
 
         FluidVoice records and transcribes meetings on this Mac. `\(FluidServeMeetings.toolName)` reads them. It is read-only and nothing else needs to be running.
 
-        Call it by its full path, in quotes:
+        Call it by its full path, quoted exactly as shown:
 
         ```
-        "\(toolPath)" meet list
+        \(self.shellQuoted(toolPath)) meet list
         ```
 
         ## Commands

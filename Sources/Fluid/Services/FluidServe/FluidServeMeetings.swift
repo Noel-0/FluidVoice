@@ -114,17 +114,31 @@ nonisolated enum FluidServeMeetings {
             .appendingPathComponent("Meetings", isDirectory: true)
     }
 
-    /// Reads the switch from the app's saved preferences and nowhere else. `UserDefaults` would also
-    /// honour a `-FluidServeMeetingAccessEnabled YES` argument, which would let a caller switch it on.
+    /// Reads the switch the way the app itself sees it (including a value an administrator has forced),
+    /// but through CFPreferences rather than `UserDefaults`, which would also honour a
+    /// `-FluidServeMeetingAccessEnabled YES` argument and let a caller switch it on.
     /// This is a consent switch, not a lock: anything running as the user could read the files anyway.
     static func isAccessEnabled(bundleIdentifier: String) -> Bool {
-        let value = CFPreferencesCopyValue(
-            self.accessDefaultsKey as CFString,
-            bundleIdentifier as CFString,
-            kCFPreferencesCurrentUser,
-            kCFPreferencesAnyHost
-        )
-        return (value as? Bool) ?? false
+        (CFPreferencesCopyAppValue(self.accessDefaultsKey as CFString, bundleIdentifier as CFString) as? Bool) ?? false
+    }
+
+    static let customSummaryPromptDefaultsKey = "MeetingSummaryCustomPrompt"
+
+    /// The prompt in the app's custom-summary box, needed to tell whether a saved custom summary is still the current one.
+    static func customSummaryPrompt(bundleIdentifier: String) -> String {
+        (CFPreferencesCopyAppValue(self.customSummaryPromptDefaultsKey as CFString, bundleIdentifier as CFString) as? String) ?? ""
+    }
+
+    /// This Mac's time zone as the app sees it. A `TZ` variable in an agent's shell must not change
+    /// which summaries count as current, so the zone is read from the system setting, not the environment.
+    static func systemTimeZone(fileManager: FileManager = .default) -> TimeZone {
+        if let target = try? fileManager.destinationOfSymbolicLink(atPath: "/etc/localtime"),
+           let range = target.range(of: "/zoneinfo/"),
+           let zone = TimeZone(identifier: String(target[range.upperBound...]))
+        {
+            return zone
+        }
+        return .current
     }
 
     // MARK: - Reading
@@ -165,12 +179,14 @@ nonisolated enum FluidServeMeetings {
         }
     }
 
-    /// Saved summaries the app itself would still show for this meeting: written by a known provider
-    /// and for the transcript as it is now. A summary from before an edit or a speaker rename is left out.
-    static func savedSummaries(for entry: Entry, fileManager: FileManager = .default) -> [SavedSummary] {
+    /// Saved summaries the app itself would still show for this meeting: written by a known provider,
+    /// for the transcript as it is now, and (for a custom summary) with the prompt as it is now.
+    /// A summary from before an edit, a speaker rename or a prompt change is left out.
+    static func savedSummaries(for entry: Entry, customPrompt: String = "", fileManager: FileManager = .default) -> [SavedSummary] {
         struct Stored: Decodable {
             var transcriptHash: String
             var text: String
+            var promptHash: String?
             var providerID: String?
             var providerName: String?
             var modelName: String?
@@ -182,14 +198,17 @@ nonisolated enum FluidServeMeetings {
             .sorted()
         guard !names.isEmpty else { return [] }
         let currentHash = self.fingerprint(self.summaryInput(for: entry.meeting))
+        let customPromptHash = self.fingerprint(customPrompt.trimmingCharacters(in: .whitespacesAndNewlines))
         return names.compactMap { name in
+            let style = String(name.dropFirst(prefix.count).dropLast(".json".count))
             guard let data = try? Data(contentsOf: entry.directory.appendingPathComponent(name, isDirectory: false)),
                   let stored = try? JSONDecoder().decode(Stored.self, from: data),
                   stored.providerID != nil, stored.transcriptHash == currentHash,
+                  stored.promptHash == (style == "custom" ? customPromptHash : nil),
                   !stored.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { return nil }
             return SavedSummary(
-                style: String(name.dropFirst(prefix.count).dropLast(".json".count)),
+                style: style,
                 text: stored.text,
                 modelName: stored.modelName ?? stored.providerName,
                 generatedAt: stored.generatedAt
@@ -199,9 +218,10 @@ nonisolated enum FluidServeMeetings {
 
     /// The exact text the app summarizes, rebuilt here only to recognise which saved summaries are current.
     /// It uses this Mac's time zone because the app does, whatever zone the listing is printed in.
-    static func summaryInput(for meeting: Meeting) -> String {
+    static func summaryInput(for meeting: Meeting, timeZone: TimeZone = FluidServeMeetings.systemTimeZone()) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
         formatter.dateStyle = .long
         formatter.timeStyle = .none
         let date = formatter.string(from: meeting.startedAt)
@@ -276,12 +296,17 @@ nonisolated enum FluidServeMeetings {
         """
     }
 
-    static func listing(_ entries: [Entry], timeZone: TimeZone = .current, fileManager: FileManager = .default) -> String {
+    static func listing(
+        _ entries: [Entry],
+        customPrompt: String = "",
+        timeZone: TimeZone = .current,
+        fileManager: FileManager = .default
+    ) -> String {
         guard !entries.isEmpty else { return "No finished meetings with a transcript were found." }
         var rows = [["ID", "DATE", "LENGTH", "SPEAKERS", "TITLE", "SUMMARIES"]]
         for entry in entries {
             let meeting = entry.meeting
-            let summaries = self.savedSummaries(for: entry, fileManager: fileManager).map(\.style)
+            let summaries = self.savedSummaries(for: entry, customPrompt: customPrompt, fileManager: fileManager).map(\.style)
             rows.append([
                 String(meeting.id.uuidString.prefix(8)),
                 self.dateText(meeting.startedAt, timeZone: timeZone),

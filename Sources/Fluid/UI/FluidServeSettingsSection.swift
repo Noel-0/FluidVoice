@@ -26,6 +26,8 @@ final class FluidServeSettingsModel: ObservableObject {
     @Published private(set) var check: FluidServeSelfCheck.Outcome?
     @Published private(set) var isChecking = false
     @Published private(set) var issue: String?
+    /// Which row the current issue came from, so another row's success does not wipe it.
+    private var issueAgent: Agent?
     /// True once the instructions for another agent are on the clipboard, so the row can say so.
     @Published private(set) var copiedAgentInstructions = false
 
@@ -60,7 +62,12 @@ final class FluidServeSettingsModel: ObservableObject {
             return
         }
         self.copiedAgentInstructions = self.copyToClipboard(FluidServeSkill.agentInstructions(toolPath: tool.path))
-        self.issue = self.copiedAgentInstructions ? nil : "Could not copy to the clipboard."
+        if !self.copiedAgentInstructions {
+            self.issueAgent = nil
+            self.issue = "Could not copy to the clipboard."
+        } else if self.issueAgent == nil {
+            self.issue = nil
+        }
     }
 
     func skillFolder(for agent: Agent) -> URL {
@@ -108,6 +115,7 @@ final class FluidServeSettingsModel: ObservableObject {
     func openCodexChat() {
         guard let url = FluidServeSkillInstaller.codexNewChatURL() else { return }
         if !NSWorkspace.shared.open(url) {
+            self.issueAgent = .codex
             self.issue = "Could not open Codex."
         }
     }
@@ -154,9 +162,11 @@ final class FluidServeSettingsModel: ObservableObject {
         let onDisk = await self.refresh(accessEnabled: accessEnabled)
         if failure == nil, onDisk[agent] == expected {
             self.notices[agent] = notice
-            self.issue = nil
+            if self.issueAgent == agent || self.issueAgent == nil { self.issue = nil }
+            if self.issueAgent == agent { self.issueAgent = nil }
         } else {
             self.notices[agent] = nil
+            self.issueAgent = agent
             self.issue = failure ?? "\(agent.displayName): the skill file is not in the expected place. Nothing was confirmed."
         }
     }
