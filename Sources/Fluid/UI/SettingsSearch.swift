@@ -71,6 +71,7 @@ enum SettingsSearchTarget: Hashable {
     case fasterLongDictation
     case dictionaryMatcherExperiments
     case historyPerformance
+    case fluidServer
 
     var section: SettingsSection {
         switch self {
@@ -127,7 +128,7 @@ enum SettingsSearchTarget: Hashable {
         case .dataAndDiagnostics, .backupAndRestore, .debugLogs:
             return .dataAndDiagnostics
 
-        case .experimental, .returnToStartingField, .fasterLongDictation, .dictionaryMatcherExperiments, .historyPerformance:
+        case .experimental, .returnToStartingField, .fasterLongDictation, .dictionaryMatcherExperiments, .historyPerformance, .fluidServer:
             return .experimental
         }
     }
@@ -452,6 +453,11 @@ enum SettingsSearchIndex {
             target: .historyPerformance,
             title: "Show Performance in History",
             terms: ["timing speed tokens per second ASR cleanup Fluid Intelligence"]
+        ),
+        .init(
+            target: .fluidServer,
+            title: "Fluid Server",
+            terms: ["experimental fv-serve meetings Claude Code Codex skill fluidmeet agents transcripts command line"]
         ),
     ]
 
