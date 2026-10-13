@@ -486,12 +486,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func isMainWindow(_ window: NSWindow) -> Bool {
-        guard window.level == .normal else { return false }
-        guard window.styleMask.contains(.titled) else { return false }
-        // The title follows the selected page ("Stats", "General"), so it cannot identify the
-        // window alone. SwiftUI names windows of the "main" scene "main-AppWindow-N".
-        if window.identifier?.rawValue.hasPrefix("main-AppWindow") == true { return true }
-        return window.title == "FluidVoice" || window.title.contains("FluidVoice")
+        MainWindowIdentity.matches(window)
     }
 
     // MARK: - Periodic Update Checks

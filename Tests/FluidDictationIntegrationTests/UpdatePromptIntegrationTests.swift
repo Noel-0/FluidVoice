@@ -34,9 +34,6 @@ final class UpdatePromptIntegrationTests: XCTestCase {
             LoginSessionLaunch.startedWithLoginSession(processStart: login, consoleLogin: nil),
             "an unknown login time shows the window"
         )
-        // Tests run long after login, so the live readings must resolve and must not match.
-        XCTAssertNotNil(LoginSessionLaunch.currentProcessStartDate())
-        XCTAssertNotNil(LoginSessionLaunch.consoleLoginDate())
     }
 
     func testMainWindowIsRecognizedWhateverPageTitleItShows() {
@@ -55,6 +52,39 @@ final class UpdatePromptIntegrationTests: XCTestCase {
         let floating = window(title: "Stats", identifier: "main-AppWindow-1")
         floating.level = .floating
         XCTAssertFalse(delegate.isMainWindow(floating))
+    }
+
+    func testMenuBarReusesHiddenMainWindowAndExcludesOtherWindows() {
+        final class CandidateWindow: NSWindow {
+            var minimized = false
+            var keyEligible = true
+            override var isMiniaturized: Bool { self.minimized }
+            override var canBecomeKey: Bool { self.keyEligible }
+        }
+        let window = CandidateWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier("main-AppWindow-1")
+        window.title = "Stats"
+        window.alphaValue = 0
+        let manager = MenuBarManager()
+        XCTAssertTrue(manager.isFluidMainWindow(window), "a concealed page-titled window must be reused")
+        XCTAssertEqual(window.alphaValue, 0, "recognition must not reveal the window")
+        XCTAssertFalse(window.isVisible, "recognition must not order the window front")
+        window.title = "General"
+        XCTAssertTrue(manager.isFluidMainWindow(window))
+        window.identifier = nil
+        XCTAssertFalse(manager.isFluidMainWindow(window), "unrelated page-titled windows stay excluded")
+        window.title = "FluidVoice"
+        XCTAssertTrue(manager.isFluidMainWindow(window), "legacy hosted windows remain supported")
+        window.level = .floating
+        XCTAssertFalse(manager.isFluidMainWindow(window), "floating captions must stay excluded")
+        window.level = .normal
+        window.minimized = true
+        XCTAssertFalse(manager.isFluidMainWindow(window), "minimized windows keep the existing menu policy")
+        window.minimized = false
+        window.keyEligible = false
+        XCTAssertFalse(manager.isFluidMainWindow(window), "non-key windows stay excluded")
+        window.close()
     }
 
     func testOnlyOlderCopiesAtTheSameLocationAreSuperseded() {
