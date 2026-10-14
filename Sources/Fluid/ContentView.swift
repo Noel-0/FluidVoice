@@ -499,6 +499,13 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .openCustomDictionaryFromVoiceEngine)) { _ in
                 self.navigateToApp(.customDictionary)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .fluidMeetEnabledChanged)) { _ in
+                if self.settings.fluidMeetEnabled, self.appServices.isUIReady {
+                    self.menuBarManager.configure(meetingCoordinator: self.appServices.meetingSessionCoordinator)
+                } else if !self.settings.fluidMeetEnabled, self.selectedSidebarItem == .meetingTranscription {
+                    self.selectedSidebarItem = .welcome
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .appNavigationRequested)) { _ in
                 self.handlePendingAppNavigation()
             }
@@ -771,9 +778,11 @@ struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             DebugLogger.shared.info("🚦 Startup delay complete, signaling UI ready...", source: "ContentView")
             self.appServices.signalUIReady()
-            self.menuBarManager.configure(
-                meetingCoordinator: self.appServices.meetingSessionCoordinator
-            )
+            if self.settings.fluidMeetEnabled {
+                self.menuBarManager.configure(
+                    meetingCoordinator: self.appServices.meetingSessionCoordinator
+                )
+            }
 
             Task { @MainActor in
                 await AudioStartupGate.shared.scheduleOpenAfterInitialUISettled()
@@ -1199,6 +1208,10 @@ struct ContentView: View {
     }
 
     private func navigateToApp(_ destination: SidebarItem) {
+        guard destination != .meetingTranscription || self.settings.fluidMeetEnabled else {
+            self.openSettings(.fluidMeet)
+            return
+        }
         self.clearShortcutRecordingMode()
         self.resetSettingsSearch()
         self.settingsNavigation.leaveForApp()
@@ -1214,7 +1227,8 @@ struct ContentView: View {
     private func closeSettings() {
         self.clearShortcutRecordingMode()
         self.resetSettingsSearch()
-        self.selectedSidebarItem = self.settingsNavigation.dismiss()
+        let destination = self.settingsNavigation.dismiss()
+        self.selectedSidebarItem = destination == .meetingTranscription && !self.settings.fluidMeetEnabled ? .welcome : destination
     }
 
     private func resetSettingsSearch() {
@@ -1496,11 +1510,13 @@ struct ContentView: View {
             Section {
                 self.sidebarNavigationLink(.commandMode, title: "Command Mode", systemImage: "terminal.fill")
                 self.sidebarNavigationLink(.fileTranscription, title: "File Transcription", systemImage: "doc.text.fill")
-                self.sidebarNavigationLink(
-                    .meetingTranscription,
-                    title: "FluidMeet",
-                    systemImage: "person.2.fill"
-                )
+                if self.settings.fluidMeetEnabled {
+                    self.sidebarNavigationLink(
+                        .meetingTranscription,
+                        title: "FluidMeet",
+                        systemImage: "person.2.fill"
+                    )
+                }
             } header: {
                 self.sidebarSectionHeader("Use")
             }

@@ -94,6 +94,11 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
 
     override init() {
         super.init()
+        NotificationCenter.default.publisher(for: .fluidMeetEnabledChanged)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateMeetingMenuItemsText() }
+            }
+            .store(in: &self.cancellables)
         NotificationCenter.default.publisher(for: .openMicrophoneSettingsRequested)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -1071,6 +1076,18 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     }
 
     private func updateMeetingMenuItemsText(now: Date = Date()) {
+        guard SettingsStore.shared.fluidMeetEnabled else {
+            for item in [
+                self.startMeetingRecordingMenuItem,
+                self.stopMeetingRecordingMenuItem,
+                self.meetingStatusMenuItem,
+                self.openMeetingTranscriptionMenuItem,
+                self.meetingMenuSeparator,
+            ] {
+                item?.isHidden = true
+            }
+            return
+        }
         let activity = self.meetingMenuPresentation.activity
         let hasMeetingStatus = activity != .inactive || self.meetingStartError != nil
         let isRecording = activity == .recording
@@ -1445,7 +1462,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     /// Keep source discovery and permission waits inside the duplicate-click guard.
     /// Errors stay in the menu; starting must never request main-window navigation.
     func startMeetingRecordingInBackground(using operation: () async throws -> Void) async {
-        guard self.canStartMeetingRecording, !self.meetingStartRequested else { return }
+        guard SettingsStore.shared.fluidMeetEnabled, self.canStartMeetingRecording, !self.meetingStartRequested else { return }
         self.meetingStartRequested = true
         self.meetingStartError = nil
         self.updateMeetingMenuItemsText()

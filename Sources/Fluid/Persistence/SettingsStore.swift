@@ -2113,6 +2113,17 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Feature availability is separate from the user's meeting detection preferences.
+    @MainActor var fluidMeetEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.fluidMeetEnabled) as? Bool ?? true }
+        set {
+            guard newValue != self.fluidMeetEnabled else { return }
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.fluidMeetEnabled)
+            NotificationCenter.default.post(name: .fluidMeetEnabledChanged, object: nil)
+        }
+    }
+
     /// Tier 1 native (Zoom/Teams/Webex) meeting auto-detection (default: ON).
     var meetingAutoDetectEnabled: Bool {
         get {
@@ -5887,6 +5898,7 @@ private extension SettingsStore {
         static let meetingRecordingDefaults = "MeetingRecordingDefaults"
         static let meetingAudioRetentionPolicy = "MeetingAudioRetentionPolicy"
         static let meetingTranscriptionBackendID = "MeetingTranscriptionBackendID"
+        static let fluidMeetEnabled = "FluidMeetEnabled"
         static let meetingAutoDetectEnabled = "MeetingAutoDetectEnabled"
         static let meetingAutoDetectBrowserEnabled = "MeetingAutoDetectBrowserEnabled"
         static let microphoneSelectionMode = "MicrophoneSelectionMode"
@@ -6472,4 +6484,8 @@ extension SettingsStore {
 
         return newModel
     }
+}
+
+extension Notification.Name {
+    static let fluidMeetEnabledChanged = Notification.Name("FluidMeetEnabledChanged")
 }

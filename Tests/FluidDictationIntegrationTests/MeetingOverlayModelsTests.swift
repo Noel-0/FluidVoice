@@ -374,6 +374,39 @@ final class MeetingOverlayPresentationReducerTests: XCTestCase {
 
 @MainActor
 final class MeetingMenuBarStartTests: XCTestCase {
+    func testDisabledFluidMeetCannotReopenOverlaysOrCreateMeetingServices() {
+        let original = UserDefaults.standard.object(forKey: "FluidMeetEnabled")
+        defer { UserDefaults.standard.set(original, forKey: "FluidMeetEnabled") }
+        let services = AppServices.shared
+        SettingsStore.shared.fluidMeetEnabled = false
+        let hadCoordinator = services.isMeetingSessionCoordinatorMaterialized
+        let windows = NSApp.windows.count
+        MeetingFloatingCaptionsController.shared.show(from: nil)
+        MeetingRecordingPillController.shared.expand()
+        MeetingStillRecordingNudgeController.shared.present()
+        MeetingDetectionPromptController.shared.present(.init(
+            episodeID: UUID(), bundleIdentifier: "us.zoom.xos", pid: 42, tier: .nativeTier1
+        ))
+        XCTAssertEqual(services.isMeetingSessionCoordinatorMaterialized, hadCoordinator)
+        XCTAssertEqual(NSApp.windows.count, windows)
+        XCTAssertNil(MeetingRecordingPillController.shared.currentOverlayFrame)
+        XCTAssertFalse(MeetingStillRecordingNudgeController.shared.isPresented)
+        XCTAssertNil(MeetingDetectionPromptController.shared.request)
+    }
+
+    func testDisabledFluidMeetIgnoresMenuStartWithoutNavigationOrError() async {
+        let original = UserDefaults.standard.object(forKey: "FluidMeetEnabled")
+        defer { UserDefaults.standard.set(original, forKey: "FluidMeetEnabled") }
+        SettingsStore.shared.fluidMeetEnabled = false
+        let manager = MenuBarManager()
+        var called = false
+        await manager.startMeetingRecordingInBackground { called = true }
+        XCTAssertFalse(called)
+        XCTAssertFalse(manager.meetingStartRequested)
+        XCTAssertNil(manager.meetingStartError)
+        XCTAssertNil(manager.requestedNavigationDestination)
+    }
+
     func testRepeatedStartIsIgnoredAndNeverNavigates() async {
         let manager = MenuBarManager()
         var calls = 0

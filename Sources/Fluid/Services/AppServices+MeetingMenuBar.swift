@@ -3,6 +3,7 @@ import Foundation
 extension AppServices {
     /// Starts the same coordinator used by FluidMeet without posting a navigation request.
     func startMeetingRecordingFromMenuBar() async throws {
+        guard SettingsStore.shared.fluidMeetEnabled else { throw MeetingCoordinatorError.featureDisabled }
         let defaults = SettingsStore.shared.meetingRecordingDefaults
         let target = defaults.mode == .onlineCall ? self.meetingAutomaticTarget : nil
         let preferredInputUID = SettingsStore.shared.preferredInputDeviceUID
@@ -20,6 +21,7 @@ extension AppServices {
             applications: applications,
             preferredInputUID: preferredInputUID
         )
+        guard SettingsStore.shared.fluidMeetEnabled else { throw MeetingCoordinatorError.featureDisabled }
         _ = try await self.meetingSessionCoordinator.startRecording(configuration: configuration)
     }
 

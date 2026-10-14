@@ -99,7 +99,9 @@ final class MeetingFloatingCaptionsController: ObservableObject {
 
     /// Opens the captions window, growing out of `sourceFrame` (the pill) when motion is allowed.
     func show(from sourceFrame: NSRect?) {
+        guard SettingsStore.shared.fluidMeetEnabled else { return }
         let coordinator = AppServices.shared.meetingSessionCoordinator
+        guard MeetingOverlayVisibility.isVisible(for: coordinator.state) else { return }
         let panel = self.panelOrCreate(coordinator: coordinator)
         self.subscribeIfNeeded(coordinator: coordinator)
 
@@ -120,6 +122,17 @@ final class MeetingFloatingCaptionsController: ObservableObject {
 
     func hide() {
         self.panel?.orderOut(nil)
+    }
+
+    func deactivate() {
+        self.hide()
+        self.stateSubscription?.cancel()
+        self.stateSubscription = nil
+        if let observer = self.screenParametersObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        self.screenParametersObserver = nil
+        self.panel = nil
     }
 
     private func panelOrCreate(coordinator: MeetingSessionCoordinator) -> MeetingFloatingCaptionsPanel {

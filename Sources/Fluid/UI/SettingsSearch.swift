@@ -12,6 +12,7 @@ import SwiftUI
 
 enum SettingsSearchTarget: Hashable {
     case general
+    case fluidMeet
     case launchAtStartup
     case showWindowAtLogin
     case dockVisibility
@@ -74,6 +75,9 @@ enum SettingsSearchTarget: Hashable {
 
     var section: SettingsSection {
         switch self {
+        case .fluidMeet:
+            return .fluidMeet
+
         case .general,
              .launchAtStartup,
              .showWindowAtLogin,
@@ -137,6 +141,7 @@ extension SettingsSection {
     var searchTarget: SettingsSearchTarget {
         switch self {
         case .general: return .general
+        case .fluidMeet: return .fluidMeet
         case .dictation: return .dictation
         case .dictationFormatting: return .textFormatting
         case .shortcuts: return .shortcuts
@@ -230,6 +235,7 @@ enum SettingsSearchIndex {
     }
 
     private static let entries: [Entry] = [
+        .init(target: .fluidMeet, title: "Enable FluidMeet", terms: ["meetings recording disable turn off enable"]),
         .init(target: .general, title: "General", terms: ["app settings preferences"]),
         .init(
             target: .launchAtStartup,

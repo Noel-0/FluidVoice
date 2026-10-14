@@ -348,6 +348,7 @@ final class MeetingSessionCoordinator: ObservableObject {
         passiveOffer: MeetingSession?,
         resolvingSourceID: MeetingSessionID?
     ) async throws -> MeetingSession {
+        guard SettingsStore.shared.fluidMeetEnabled else { throw MeetingCoordinatorError.featureDisabled }
         guard self.startReservation == nil else { throw MeetingCoordinatorError.recordingAlreadyActive }
         guard !self.hasBlockingActivityTask,
               self.canBeginNewRecording, !self.isDeleting
@@ -390,8 +391,10 @@ final class MeetingSessionCoordinator: ObservableObject {
         // open indefinitely; reserving meeting audio first would unnecessarily block dictation.
         try await self.validateRecordingModels()
         try Task.checkCancellation()
+        guard SettingsStore.shared.fluidMeetEnabled else { throw MeetingCoordinatorError.featureDisabled }
         try await self.capture.preflightPermissions()
         try Task.checkCancellation()
+        guard SettingsStore.shared.fluidMeetEnabled else { throw MeetingCoordinatorError.featureDisabled }
         guard self.startReservation == reservation,
               self.activeSession?.id == passiveOffer?.id,
               !self.hasBlockingActivityTaskExceptStart,
@@ -406,6 +409,7 @@ final class MeetingSessionCoordinator: ObservableObject {
         let lease = try await self.audioArbiter.acquireMeetingCapture()
         do {
             try Task.checkCancellation()
+            guard SettingsStore.shared.fluidMeetEnabled else { throw MeetingCoordinatorError.featureDisabled }
             guard self.startReservation == reservation,
                   self.activeSession?.id == passiveOffer?.id,
                   !self.hasBlockingActivityTaskExceptStart,
@@ -2170,6 +2174,7 @@ final class MeetingSessionCoordinator: ObservableObject {
 }
 
 enum MeetingCoordinatorError: LocalizedError {
+    case featureDisabled
     case recordingAlreadyActive
     case noActiveMeeting
     case noRecoverableAudio
@@ -2180,6 +2185,8 @@ enum MeetingCoordinatorError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .featureDisabled:
+            return "Enable FluidMeet in Settings to record a meeting."
         case .recordingAlreadyActive:
             return "Another meeting recording is already active."
         case .noActiveMeeting:

@@ -12,6 +12,65 @@ import XCTest
 // Existing recovery suite shares setup across crash and corruption scenarios.
 // swiftlint:disable:next type_body_length
 final class MeetingRecoveryTests: XCTestCase {
+    func testDisabledFluidMeetRejectsRecordingBeforeTouchingCaptureOrStorage() async throws {
+        let settings = SettingsStore.shared
+        let original = UserDefaults.standard.object(forKey: "FluidMeetEnabled")
+        defer { UserDefaults.standard.set(original, forKey: "FluidMeetEnabled") }
+        settings.fluidMeetEnabled = false
+        let dir = self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = MeetingSessionStore(rootDirectory: dir)
+        let track = self.makeMicrophoneTrack(chunks: [])
+        var saved = self.makeSession(state: .completed, audioTracks: [track])
+        saved.transcriptSegments = [self.makeTranscriptSegment(sourceTrackID: track.id, speakerID: nil)]
+        try await store.create(saved)
+        let capture = StubCaptureController()
+        let coordinator = MeetingSessionCoordinator(
+            store: store, capture: capture, processing: StubProcessingController(), audioArbiter: StubArbiter()
+        )
+        do {
+            _ = try await coordinator.startRecording(configuration: self.makeConfiguration())
+            XCTFail("Disabled FluidMeet must reject recording")
+        } catch {
+            guard case MeetingCoordinatorError.featureDisabled = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertEqual(capture.startCount, 0)
+        XCTAssertEqual(capture.preflightCount, 0)
+        XCTAssertFalse(coordinator.hasPendingStart)
+        let sessions = try await store.loadAll()
+        XCTAssertEqual(sessions.map(\.id), [saved.id])
+        XCTAssertEqual(sessions.first?.transcriptSegments, saved.transcriptSegments)
+    }
+
+    func testDisablingFluidMeetDuringModelPreparationDoesNotStartCapture() async throws {
+        let original = UserDefaults.standard.object(forKey: "FluidMeetEnabled")
+        defer { UserDefaults.standard.set(original, forKey: "FluidMeetEnabled") }
+        SettingsStore.shared.fluidMeetEnabled = true
+        let dir = self.makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let capture = StubCaptureController()
+        let coordinator = MeetingSessionCoordinator(
+            store: MeetingSessionStore(rootDirectory: dir),
+            capture: capture,
+            processing: StubProcessingController(),
+            audioArbiter: StubArbiter(),
+            validateRecordingModels: { SettingsStore.shared.fluidMeetEnabled = false }
+        )
+        do {
+            _ = try await coordinator.startRecording(configuration: self.makeConfiguration())
+            XCTFail("A stale start must not revive FluidMeet")
+        } catch {
+            guard case MeetingCoordinatorError.featureDisabled = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertEqual(capture.preflightCount, 0)
+        XCTAssertEqual(capture.startCount, 0)
+        XCTAssertFalse(coordinator.hasPendingStart)
+    }
+
     func testUnexpectedStopPublishesQuiescenceAfterDelayedAudioHandback() async throws {
         let dir = self.makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

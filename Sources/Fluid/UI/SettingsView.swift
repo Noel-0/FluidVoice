@@ -221,6 +221,29 @@ struct SettingsView: View {
             searchScrollRequest: self.searchScrollRequest
         ) {
             VStack(spacing: 16) {
+                if self.selectedSection == .fluidMeet {
+                    ThemedCard(style: .standard) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Label("FluidMeet Settings", systemImage: "person.2")
+                                .font(.fluidSystem(.headline))
+                                .foregroundStyle(.primary)
+                            self.settingsToggleRow(
+                                title: "Enable FluidMeet",
+                                description: "Record and transcribe meetings. Turning this off hides FluidMeet and stops meeting detection. Your saved meetings are kept.",
+                                footnote: self.appServices.hasActiveMeetingSessionActivity
+                                    ? "Finish the current meeting recording or processing before turning FluidMeet off." : nil,
+                                isOn: Binding(
+                                    get: { self.settings.fluidMeetEnabled },
+                                    set: { self.appServices.setFluidMeetEnabled($0) }
+                                )
+                            )
+                            .disabled(self.appServices.hasActiveMeetingSessionActivity)
+                        }
+                        .padding(16)
+                    }
+                    .settingsSearchTarget(.fluidMeet)
+                }
+
                 // App Settings Card
                 ThemedCard(style: .standard) {
                     VStack(alignment: .leading, spacing: 14) {
@@ -2712,7 +2735,7 @@ private extension SettingsView {
             await self.prepareAudioSettings()
         case .dictation:
             await self.refreshAudioHistoryUsageInBackground()
-        case .dictationFormatting, .shortcuts, .notifications, .overlay, .dataAndDiagnostics, .experimental:
+        case .fluidMeet, .dictationFormatting, .shortcuts, .notifications, .overlay, .dataAndDiagnostics, .experimental:
             break
         }
     }
