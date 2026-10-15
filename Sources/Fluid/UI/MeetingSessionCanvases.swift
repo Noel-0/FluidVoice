@@ -691,6 +691,7 @@ struct MeetingResultCanvas: View {
         Menu {
             Menu("Export", systemImage: "square.and.arrow.up") {
                 Button("Text…") { self.onExportTranscript(self.session, .text, self.showsProbableEchoes) }
+                Button("Markdown…") { self.onExportTranscript(self.session, .markdown, self.showsProbableEchoes) }
                 Button("JSON…") { self.onExportTranscript(self.session, .json, self.showsProbableEchoes) }
             }
             .disabled(!hasText || self.documentSection != .transcript)

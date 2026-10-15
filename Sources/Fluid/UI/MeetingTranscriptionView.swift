@@ -1270,6 +1270,7 @@ struct MeetingTranscriptionView: View {
             let data: Data
             switch format {
             case .text: data = Data(MeetingTranscriptExporter.text(for: session, includeEchoes: includeEchoes).utf8)
+            case .markdown: data = Data(MeetingTranscriptExporter.markdown(for: session, includeEchoes: includeEchoes).utf8)
             case .json: data = try MeetingTranscriptExporter.json(for: session)
             }
             try data.write(to: url, options: .atomic)
@@ -1334,11 +1335,13 @@ struct MeetingTranscriptionView: View {
 
 enum MeetingTranscriptExportFormat {
     case text
+    case markdown
     case json
 
     var fileExtension: String {
         switch self {
         case .text: return "txt"
+        case .markdown: return "md"
         case .json: return "json"
         }
     }
@@ -1820,6 +1823,10 @@ private struct MeetingHistoryInspector: View {
         .disabled(!session.hasFinalizedAudio)
         Button("Export Transcript (Text)…", systemImage: "doc.text") {
             self.onExportTranscript(session, .text)
+        }
+        .disabled(!session.transcriptSegments.contains(where: { !$0.isEcho }))
+        Button("Export Transcript (Markdown)…", systemImage: "doc.richtext") {
+            self.onExportTranscript(session, .markdown)
         }
         .disabled(!session.transcriptSegments.contains(where: { !$0.isEcho }))
         Button("Export Transcript (JSON)…", systemImage: "curlybraces") {
