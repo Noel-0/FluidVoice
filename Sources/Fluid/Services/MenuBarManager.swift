@@ -1451,6 +1451,25 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         }
     }
 
+    #if DEBUG
+    func configureMeetingShortcutForTesting(state: MeetingCoordinatorState, onStop: @escaping () -> Void) {
+        self.applyMeetingPresentation(state: state, activeSession: nil, latestCompletedSession: nil)
+        self.stopMeetingRecordingHandler = onStop
+    }
+    #endif
+
+    /// Reuse the menu's guarded actions; a meeting shortcut never starts dictation or navigates.
+    func toggleMeetingRecordingFromShortcut(using operation: () async throws -> Void) async {
+        guard SettingsStore.shared.fluidMeetEnabled, !self.meetingStartRequested else { return }
+        if self.meetingMenuPresentation.activity == .recording {
+            self.stopMeetingRecording()
+            return
+        }
+        guard self.asrService?.activeExclusiveActivity == nil,
+              self.asrService?.isRunningOrStarting != true else { return }
+        await self.startMeetingRecordingInBackground(using: operation)
+    }
+
     @objc private func startMeetingRecording() {
         Task { @MainActor in
             await self.startMeetingRecordingInBackground {

@@ -1167,7 +1167,7 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertTrue(optional.contains("(.command, self.commandModeHotkeyShortcut)"), "The saved binding must remain reserved when Command Mode is toggled off")
         XCTAssertFalse(conflicts.contains("if self.isCommandModeShortcutEnabled"))
         XCTAssertTrue(conflicts.contains("configuredShortcut == shortcut"))
-        XCTAssertTrue(conflicts.contains("shortcut.conflictsWith(configuredShortcut)"))
+        XCTAssertTrue(conflicts.contains("shortcut.conflictsWith(configuredShortcut,"))
         XCTAssertTrue(conflicts.contains("otherTarget != target"), "Editing the Command binding must not conflict with itself")
     }
 
@@ -2148,6 +2148,7 @@ final class HotkeyShortcutTests: XCTestCase {
         asr: ASRService,
         onStart: @escaping () async -> Void,
         onStop: @escaping () async -> Void = {},
+        isShortcutCaptureActive: @escaping () -> Bool = { false },
         isSessionLocked: @escaping () -> Bool = { false }
     ) -> GlobalHotkeyManager {
         let manager = GlobalHotkeyManager(
@@ -2163,6 +2164,7 @@ final class HotkeyShortcutTests: XCTestCase {
             dictationModeCallback: onStart,
             stopAndProcessCallback: { _ in await onStop() },
             isDictateRecordingProvider: { true },
+            isShortcutCaptureActiveProvider: isShortcutCaptureActive,
             isSessionLockedProvider: isSessionLocked
         )
         manager.setHotkeyMode(.toggle)
@@ -4400,5 +4402,112 @@ private final class ModifierOnlyFlagsReplay {
     /// Same mark as keyDown; the mouse observer tap calls markOtherInputDuringModifierOnly too.
     func mouseDown() {
         self.keyDown()
+    }
+}
+
+@MainActor
+extension HotkeyShortcutTests {
+    func testMeetingShortcutIsOptInPersistsAndRejectsUnsafeBindings() throws {
+        try self.withRestoredDefaults(keys: ["MeetingRecordingHotkeyShortcut"]) {
+            UserDefaults.standard.removeObject(forKey: "MeetingRecordingHotkeyShortcut")
+            let settings = SettingsStore.shared
+            XCTAssertNil(settings.meetingRecordingHotkeyShortcut)
+            let shortcut = HotkeyShortcut(keyCode: 46, modifierFlags: [.control, .option, .command])
+            settings.meetingRecordingHotkeyShortcut = shortcut
+            XCTAssertEqual(settings.meetingRecordingHotkeyShortcut, shortcut)
+            let payload = settings.makeBackupPayload()
+            let decoded = try JSONDecoder().decode(SettingsBackupPayload.self, from: JSONEncoder().encode(payload))
+            XCTAssertEqual(decoded.meetingRecordingHotkeyShortcut, shortcut)
+            XCTAssertEqual(decoded.meetingRecordingShortcutEnabled, true)
+            for invalid in [HotkeyShortcut(keyCode: 46, modifierFlags: []), HotkeyShortcut(keyCode: 58, modifierFlags: []), HotkeyShortcut(mouseButton: 3, modifierFlags: [.option])] {
+                settings.meetingRecordingHotkeyShortcut = invalid
+                XCTAssertNil(settings.meetingRecordingHotkeyShortcut)
+            }
+            var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? [String: Any])
+            legacy.removeValue(forKey: "meetingRecordingHotkeyShortcut")
+            legacy.removeValue(forKey: "meetingRecordingShortcutEnabled")
+            let oldPayload = try JSONDecoder().decode(SettingsBackupPayload.self, from: JSONSerialization.data(withJSONObject: legacy))
+            XCTAssertNil(oldPayload.meetingRecordingShortcutEnabled)
+            XCTAssertNil(oldPayload.meetingRecordingHotkeyShortcut)
+            settings.meetingRecordingHotkeyShortcut = nil
+            XCTAssertEqual(settings.makeBackupPayload().meetingRecordingShortcutEnabled, false)
+        }
+    }
+
+    func testMeetingShortcutTogglesOnceInEveryActivationModeWithoutDictation() async throws {
+        let defaults = UserDefaults.standard
+        let oldShortcut = defaults.object(forKey: "MeetingRecordingHotkeyShortcut")
+        let oldEnabled = defaults.object(forKey: "FluidMeetEnabled")
+        defer {
+            defaults.set(oldShortcut, forKey: "MeetingRecordingHotkeyShortcut")
+            defaults.set(oldEnabled, forKey: "FluidMeetEnabled")
+        }
+        let settings = SettingsStore.shared
+        settings.fluidMeetEnabled = true
+        settings.meetingRecordingHotkeyShortcut = HotkeyShortcut(keyCode: 46, modifierFlags: [.control, .option, .command])
+        var locked = false
+        var capturingShortcut = false
+        var dictationCalls = 0
+        let asr = ASRService()
+        let manager = self.makePrimaryReleaseTestManager(asr: asr, onStart: { dictationCalls += 1 }, isShortcutCaptureActive: { capturingShortcut }, isSessionLocked: { locked })
+        var meetingCalls = 0
+        manager.setMeetingRecordingCallback { meetingCalls += 1 }
+        let down = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 46, keyDown: true))
+        down.flags = [.maskControl, .maskAlternate, .maskCommand]
+        let up = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 46, keyDown: false))
+        up.flags = []
+        for mode in [HotkeyActivationMode.hold, .automatic, .toggle] {
+            manager.setHotkeyMode(mode)
+            let before = meetingCalls
+            down.setIntegerValueField(.keyboardEventAutorepeat, value: 0)
+            XCTAssertNil(manager.handleKeyEvent(type: .keyDown, event: down))
+            down.setIntegerValueField(.keyboardEventAutorepeat, value: 1)
+            XCTAssertNil(manager.handleKeyEvent(type: .keyDown, event: down))
+            XCTAssertNil(manager.handleKeyEvent(type: .keyUp, event: up))
+            XCTAssertEqual(meetingCalls, before + 1)
+        }
+        down.setIntegerValueField(.keyboardEventAutorepeat, value: 0)
+        let synthesized = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 46, keyDown: true))
+        synthesized.flags = down.flags
+        synthesized.setIntegerValueField(.eventSourceUserData, value: TypingService.synthesizedEventUserData)
+        XCTAssertNotNil(manager.handleKeyEvent(type: .keyDown, event: synthesized))
+        XCTAssertFalse(GlobalHotkeyManager.isSynthesizedTypingEvent(down))
+        capturingShortcut = true
+        XCTAssertNotNil(manager.handleKeyEvent(type: .keyDown, event: down))
+        capturingShortcut = false
+        locked = true
+        XCTAssertNotNil(manager.handleKeyEvent(type: .keyDown, event: down))
+        locked = false
+        settings.fluidMeetEnabled = false
+        XCTAssertNotNil(manager.handleKeyEvent(type: .keyDown, event: down))
+        settings.fluidMeetEnabled = true
+        settings.meetingRecordingHotkeyShortcut = nil
+        XCTAssertNotNil(manager.handleKeyEvent(type: .keyDown, event: down))
+        XCTAssertEqual(meetingCalls, 3)
+        settings.meetingRecordingHotkeyShortcut = HotkeyShortcut(keyCode: 46, modifierFlags: [.control, .option, .command])
+        XCTAssertNil(manager.handleKeyEvent(type: .keyDown, event: down))
+        manager.resetModifierOnlyShortcutTracking()
+        XCTAssertNotNil(manager.handleKeyEvent(type: .keyUp, event: up), "A reset must clear stale meeting key ownership")
+        XCTAssertEqual(meetingCalls, 4)
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+        XCTAssertEqual(dictationCalls, 0)
+        XCTAssertFalse(asr.isRunningOrStarting)
+        XCTAssertNil(asr.activeExclusiveActivity)
+    }
+}
+
+extension HotkeyShortcutTests {
+    func testMeetingChordRejectsModifierPrefixesWithoutChangingOtherShortcutRules() {
+        let option = HotkeyShortcut(keyCode: 61, modifierFlags: [])
+        let chord = HotkeyShortcut(keyCode: 46, modifierFlags: [.control, .option, .command])
+        let safeChord = HotkeyShortcut(keyCode: 46, modifierFlags: [.control, .command])
+        XCTAssertTrue(chord.conflictsWith(option, includingKeyboardModifierPrefixes: true))
+        XCTAssertTrue(option.conflictsWith(chord, includingKeyboardModifierPrefixes: true))
+        XCTAssertFalse(safeChord.conflictsWith(option, includingKeyboardModifierPrefixes: true))
+        XCTAssertFalse(chord.conflictsWith(option), "Existing dictation shortcut rules remain unchanged")
+        XCTAssertFalse(safeChord.conflictsWith(HotkeyShortcut(keyCode: 56, modifierFlags: [.control]), includingKeyboardModifierPrefixes: true))
+        XCTAssertTrue(safeChord.conflictsWith(HotkeyShortcut(keyCode: 59, modifierFlags: []), includingKeyboardModifierPrefixes: true))
     }
 }

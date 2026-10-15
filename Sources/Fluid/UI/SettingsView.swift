@@ -637,6 +637,33 @@ struct SettingsView: View {
                                                 }
                                             )
                                             .settingsSearchTarget(.pasteLastTranscriptionShortcut)
+                                            self.shortcutGroupDivider
+                                            self.shortcutRow(
+                                                content: .init(
+                                                    icon: "person.2.wave.2",
+                                                    iconColor: .secondary,
+                                                    title: "Start / Stop Meeting",
+                                                    description: self.settings.fluidMeetEnabled
+                                                        ? "Toggle meeting recording using your saved source"
+                                                        : "Enable FluidMeet in FluidMeet Settings to use this shortcut"
+                                                ),
+                                                shortcut: self.settings.meetingRecordingHotkeyShortcut,
+                                                isRecording: self.isRecording(.meeting),
+                                                isAnyRecordingActive: self.isRecordingAnyShortcut,
+                                                recordingMessage: self.isRecording(.meeting) ? self.shortcutRecordingMessage : nil,
+                                                onChangePressed: {
+                                                    self.shortcutRecordingMessage = nil
+                                                    self.activeShortcutRecordingTarget = .meeting
+                                                },
+                                                onRemovePressed: {
+                                                    if self.activeShortcutRecordingTarget == .meeting {
+                                                        self.shortcutRecordingMessage = nil
+                                                        self.activeShortcutRecordingTarget = nil
+                                                    }
+                                                    self.settings.meetingRecordingHotkeyShortcut = nil
+                                                }
+                                            )
+                                            .settingsSearchTarget(.meetingRecordingShortcut)
                                         }
                                     }
                                 }

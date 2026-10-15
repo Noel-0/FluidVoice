@@ -161,6 +161,7 @@ enum ShortcutRecordingTarget: Hashable {
     case edit
     case cancel
     case pasteLast
+    case meeting
     case dictationPrompt(String)
     case newPrompt
 
@@ -176,6 +177,8 @@ enum ShortcutRecordingTarget: Hashable {
             return "Edit Mode"
         case .cancel:
             return "Cancel Recording"
+        case .meeting:
+            return "Start / Stop Meeting"
         case .pasteLast:
             return "Paste Last Transcription"
         case .dictationPrompt:
@@ -189,7 +192,7 @@ enum ShortcutRecordingTarget: Hashable {
         switch self {
         case .secondaryDictation, .command, .edit, .pasteLast:
             return true
-        case .primaryDictation, .cancel, .dictationPrompt, .newPrompt:
+        case .primaryDictation, .cancel, .meeting, .dictationPrompt, .newPrompt:
             return false
         }
     }
@@ -203,7 +206,7 @@ enum ShortcutRecordingTarget: Hashable {
         switch self {
         case .primaryDictation, .pasteLast:
             return true
-        case .secondaryDictation, .command, .edit, .cancel, .dictationPrompt, .newPrompt:
+        case .secondaryDictation, .command, .edit, .cancel, .meeting, .dictationPrompt, .newPrompt:
             return false
         }
     }
@@ -1254,6 +1257,9 @@ struct ContentView: View {
     }
 
     private func shortcutConflictMessage(for shortcut: HotkeyShortcut, target: ShortcutRecordingTarget) -> String? {
+        if target == .meeting, !shortcut.isMeetingRecordingShortcut {
+            return "Use a keyboard key with a modifier for meeting recording"
+        }
         if shortcut.isMouseShortcut {
             guard target.allowsMouseShortcut else {
                 return "Mouse clicks can only be assigned to Primary Dictation or Paste Last Transcription"
@@ -1269,7 +1275,7 @@ struct ContentView: View {
             if configuredShortcut == shortcut {
                 return "Duplicate with Primary Dictation Shortcut"
             }
-            if shortcut.conflictsWith(configuredShortcut) {
+            if shortcut.conflictsWith(configuredShortcut, includingKeyboardModifierPrefixes: target == .meeting) {
                 return "Overlaps Primary Dictation Shortcut — use a different modifier key"
             }
         }
@@ -1282,6 +1288,7 @@ struct ContentView: View {
             configuredShortcuts.append((.secondaryDictation, self.promptModeHotkeyShortcut))
         }
         let optionalConfiguredShortcuts: [(ShortcutRecordingTarget, HotkeyShortcut?)] = [
+            (.meeting, SettingsStore.shared.meetingRecordingHotkeyShortcut),
             (.cancel, self.cancelRecordingHotkeyShortcut),
             (.command, self.commandModeHotkeyShortcut),
             (.pasteLast, self.pasteLastTranscriptionHotkeyShortcut),
@@ -1291,7 +1298,7 @@ struct ContentView: View {
             if configuredShortcut == shortcut {
                 return "Duplicate with \(otherTarget.title)"
             }
-            if shortcut.conflictsWith(configuredShortcut) {
+            if shortcut.conflictsWith(configuredShortcut, includingKeyboardModifierPrefixes: target == .meeting || otherTarget == .meeting) {
                 return "Overlaps \(otherTarget.title) — use a different modifier key"
             }
         }
@@ -1300,7 +1307,7 @@ struct ContentView: View {
             if configuredShortcut == shortcut {
                 return "Duplicate with \(otherTarget.title)"
             }
-            if shortcut.conflictsWith(configuredShortcut) {
+            if shortcut.conflictsWith(configuredShortcut, includingKeyboardModifierPrefixes: target == .meeting || otherTarget == .meeting) {
                 return "Overlaps \(otherTarget.title) — use a different modifier key"
             }
         }
@@ -1315,7 +1322,7 @@ struct ContentView: View {
             if assignment.shortcut == shortcut {
                 return "Duplicate with Prompt Shortcut"
             }
-            if shortcut.conflictsWith(assignment.shortcut) {
+            if shortcut.conflictsWith(assignment.shortcut, includingKeyboardModifierPrefixes: target == .meeting) {
                 return "Overlaps Prompt Shortcut — use a different modifier key"
             }
         }
@@ -1347,6 +1354,8 @@ struct ContentView: View {
             self.rewriteModeHotkeyShortcut = shortcut
             SettingsStore.shared.rewriteModeHotkeyShortcut = shortcut
             self.hotkeyManager?.updateRewriteModeShortcut(shortcut)
+        case .meeting:
+            SettingsStore.shared.meetingRecordingHotkeyShortcut = shortcut
         case .cancel:
             self.cancelRecordingHotkeyShortcut = shortcut
             SettingsStore.shared.cancelRecordingHotkeyShortcut = shortcut
@@ -1401,7 +1410,7 @@ struct ContentView: View {
         case .pasteLast:
             self.isPasteLastTranscriptionShortcutEnabled = enabled
             SettingsStore.shared.pasteLastTranscriptionShortcutEnabled = enabled
-        case .primaryDictation, .cancel, .dictationPrompt, .newPrompt:
+        case .primaryDictation, .cancel, .meeting, .dictationPrompt, .newPrompt:
             break
         }
     }
@@ -5098,6 +5107,14 @@ struct ContentView: View {
         // Distinguishes suggestion dismissal from recording cancellation.
         self.hotkeyManager?.setCancelCallback {
             self.handleCancelShortcutResult()
+        }
+
+        self.hotkeyManager?.setMeetingRecordingCallback {
+            Task { @MainActor in
+                await self.menuBarManager.toggleMeetingRecordingFromShortcut {
+                    try await AppServices.shared.startMeetingRecordingFromMenuBar()
+                }
+            }
         }
 
         // Re-insert the most recent transcription on demand (no clipboard involved).

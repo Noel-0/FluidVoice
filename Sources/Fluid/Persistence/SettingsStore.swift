@@ -3217,6 +3217,26 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Unassigned by default. Meeting recording never claims a shortcut until explicitly configured.
+    var meetingRecordingHotkeyShortcut: HotkeyShortcut? {
+        get {
+            guard let data = self.defaults.data(forKey: Keys.meetingRecordingHotkeyShortcut),
+                  let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data),
+                  shortcut.isMeetingRecordingShortcut else { return nil }
+            return shortcut
+        }
+        set {
+            objectWillChange.send()
+            guard let newValue, newValue.isMeetingRecordingShortcut,
+                  let data = try? JSONEncoder().encode(newValue)
+            else {
+                self.defaults.removeObject(forKey: Keys.meetingRecordingHotkeyShortcut)
+                return
+            }
+            self.defaults.set(data, forKey: Keys.meetingRecordingHotkeyShortcut)
+        }
+    }
+
     // MARK: - Paste Last Transcription Settings
 
     /// Whether the "Paste Last Transcription" global hotkey is active. Opt-in and off by default.
@@ -3667,6 +3687,8 @@ final class SettingsStore: ObservableObject {
             rewriteModeSelectedModel: self.rewriteModeSelectedModel,
             rewriteModeSelectedProviderID: self.rewriteModeSelectedProviderID,
             rewriteModeLinkedToGlobal: self.rewriteModeLinkedToGlobal,
+            meetingRecordingHotkeyShortcut: self.meetingRecordingHotkeyShortcut,
+            meetingRecordingShortcutEnabled: self.meetingRecordingHotkeyShortcut != nil,
             cancelRecordingHotkeyShortcut: self.cancelRecordingHotkeyShortcut,
             pasteLastTranscriptionHotkeyShortcut: self.pasteLastTranscriptionHotkeyShortcut,
             pasteLastTranscriptionShortcutEnabled: self.pasteLastTranscriptionShortcutEnabled,
@@ -3819,6 +3841,9 @@ final class SettingsStore: ObservableObject {
         self.rewriteModeSelectedModel = payload.rewriteModeSelectedModel
         self.rewriteModeSelectedProviderID = payload.rewriteModeSelectedProviderID
         self.rewriteModeLinkedToGlobal = payload.rewriteModeLinkedToGlobal
+        if let enabled = payload.meetingRecordingShortcutEnabled {
+            self.meetingRecordingHotkeyShortcut = enabled ? payload.meetingRecordingHotkeyShortcut : nil
+        }
         self.cancelRecordingHotkeyShortcut = payload.cancelRecordingHotkeyShortcut
         // Both guarded so restoring an older backup (which predates these fields) doesn't wipe a
         // currently-configured shortcut or leave the feature enabled with no shortcut bound.
@@ -5952,6 +5977,7 @@ private extension SettingsStore {
         static let commandModeSelectedProviderID = "CommandModeSelectedProviderID"
         static let commandModeHotkeyShortcut = "CommandModeHotkeyShortcut"
         static let commandModeConfirmBeforeExecute = "CommandModeConfirmBeforeExecute"
+        static let meetingRecordingHotkeyShortcut = "MeetingRecordingHotkeyShortcut"
         static let cancelRecordingHotkeyShortcut = "CancelRecordingHotkeyShortcut"
         static let pasteLastTranscriptionHotkeyShortcut = "PasteLastTranscriptionHotkeyShortcut"
         static let pasteLastTranscriptionShortcutEnabled = "PasteLastTranscriptionShortcutEnabled"

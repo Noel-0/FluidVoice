@@ -573,3 +573,57 @@ private final class HistorySnapshotLoader {
         pending?.resume(with: result)
     }
 }
+
+@MainActor
+extension MeetingMenuBarStartTests {
+    func testMeetingShortcutIgnoresBusyStatesAndDuplicateStops() async throws {
+        let previous = UserDefaults.standard.object(forKey: "FluidMeetEnabled")
+        defer { UserDefaults.standard.set(previous, forKey: "FluidMeetEnabled") }
+        SettingsStore.shared.fluidMeetEnabled = true
+        let manager = MenuBarManager()
+        let id = UUID()
+        var starts = 0
+        var stops = 0
+        for state in [MeetingCoordinatorState.preparing(id), .stopping(id), .processing(id, .transcribing)] {
+            manager.configureMeetingShortcutForTesting(state: state) { stops += 1 }
+            await manager.toggleMeetingRecordingFromShortcut { starts += 1 }
+        }
+        XCTAssertEqual(starts, 0)
+        XCTAssertEqual(stops, 0)
+        manager.configureMeetingShortcutForTesting(state: .recording(id)) { stops += 1 }
+        await manager.toggleMeetingRecordingFromShortcut { starts += 1 }
+        await manager.toggleMeetingRecordingFromShortcut { starts += 1 }
+        XCTAssertEqual(stops, 1)
+        XCTAssertEqual(starts, 0)
+        manager.configureMeetingShortcutForTesting(state: .completed(id)) { stops += 1 }
+        await manager.toggleMeetingRecordingFromShortcut {
+            starts += 1
+            await manager.toggleMeetingRecordingFromShortcut { starts += 1 }
+        }
+        XCTAssertEqual(starts, 1)
+        XCTAssertFalse(manager.meetingStartRequested)
+        XCTAssertNil(manager.requestedNavigationDestination)
+    }
+
+    func testMeetingShortcutCannotInterruptDictationAndFailureAllowsRetry() async throws {
+        let previous = UserDefaults.standard.object(forKey: "FluidMeetEnabled")
+        defer { UserDefaults.standard.set(previous, forKey: "FluidMeetEnabled") }
+        SettingsStore.shared.fluidMeetEnabled = true
+        let asr = ASRService()
+        let manager = MenuBarManager()
+        manager.configure(asrService: asr)
+        let lease = try asr.acquireExclusiveActivity(.dictation)
+        var starts = 0
+        await manager.toggleMeetingRecordingFromShortcut { starts += 1 }
+        XCTAssertEqual(starts, 0)
+        XCTAssertEqual(asr.activeExclusiveActivity, .dictation)
+        asr.releaseExclusiveActivity(lease)
+        await manager.toggleMeetingRecordingFromShortcut { throw MeetingCaptureError.microphoneUnavailable }
+        XCTAssertFalse(manager.meetingStartRequested)
+        XCTAssertNotNil(manager.meetingStartError)
+        await manager.toggleMeetingRecordingFromShortcut { starts += 1 }
+        XCTAssertEqual(starts, 1)
+        XCTAssertNil(manager.meetingStartError)
+        XCTAssertNil(manager.requestedNavigationDestination)
+    }
+}

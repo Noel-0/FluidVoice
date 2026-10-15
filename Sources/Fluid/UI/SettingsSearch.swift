@@ -30,6 +30,7 @@ enum SettingsSearchTarget: Hashable {
     case editModeShortcut
     case cancelRecordingShortcut
     case pasteLastTranscriptionShortcut
+    case meetingRecordingShortcut
     case activationMode
     case holdSpaceToMute
     case copyToClipboard
@@ -110,7 +111,7 @@ enum SettingsSearchTarget: Hashable {
 
         case .shortcuts, .globalHotkey, .primaryDictationShortcuts,
              .commandModeShortcut, .editModeShortcut, .cancelRecordingShortcut,
-             .pasteLastTranscriptionShortcut:
+             .pasteLastTranscriptionShortcut, .meetingRecordingShortcut:
             return .shortcuts
 
         case .notifications, .aiEnhancementFailures, .microphoneChanges, .pasteCheck:
@@ -196,6 +197,7 @@ struct SettingsSearchAvailability {
              .editModeShortcut,
              .cancelRecordingShortcut,
              .pasteLastTranscriptionShortcut,
+             .meetingRecordingShortcut,
              .activationMode,
              .copyToClipboard,
              .textInsertionMode,
@@ -294,6 +296,7 @@ enum SettingsSearchIndex {
             title: "Paste Last Transcription",
             terms: ["reinsert recent text hotkey shortcut clipboard"]
         ),
+        .init(target: .meetingRecordingShortcut, title: "Meeting Recording Shortcut", terms: ["FluidMeet start stop toggle recording keyboard hotkey"]),
         .init(target: .activationMode, title: "Activation Mode", terms: ["hold toggle hotkey behavior"]),
         .init(target: .holdSpaceToMute, title: "Hold Space to Mute", terms: ["pause microphone spacebar resume silence"]),
         .init(
