@@ -434,6 +434,14 @@ struct ContentView: View {
         return self.beginDictationRecording(for: .primary, mode: .dictate)
     }
 
+    func beginCommandModeSwitchForTesting() async {
+        await self.beginCommandRecording()
+    }
+
+    func beginRewriteModeSwitchForTesting() async {
+        await self.beginRewriteRecording()
+    }
+
     func blockDictationModeSwitchForTesting(savingCancellation: Bool = false, processing: Bool = false) {
         self.isSavingCancelledRecording = savingCancellation
         self.processingDictationLifecycleID = processing ? self.overlayLifecycleID : nil
@@ -4877,6 +4885,106 @@ struct ContentView: View {
         self.newModelName = ""
     }
 
+    private func beginCommandRecording() async {
+        guard self.canBeginDictationRecording() else { return }
+        DebugLogger.shared.info("Command mode triggered", source: "ContentView")
+        self.captureRecordingContext()
+
+        // Set flag so stopAndProcessTranscription knows to process as command
+        self.setActiveRecordingMode(.command)
+
+        // Set overlay mode to command
+        self.menuBarManager.setOverlayMode(.command)
+
+        guard !self.asr.isRunningOrStarting else { return }
+
+        self.advanceOverlayLifecycle()
+
+        // Start recording immediately for the command
+        DebugLogger.shared.info(
+            "Starting voice recording for command",
+            source: "ContentView"
+        )
+        let captureOverlayLifecycleID = self.overlayLifecycleID
+        let captureTask = Task {
+            guard !Task.isCancelled else {
+                self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .command)
+                return
+            }
+            let startOutcome = await self.asr.start(onCaptureStarted: {
+                TranscriptionSoundPlayer.shared.playStartSound()
+                self.appBench("overlay_phase phase=recording trigger=first_pcm mode=command")
+            })
+            guard !Task.isCancelled else {
+                self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .command)
+                return
+            }
+            if startOutcome == .failed {
+                self.menuBarManager.hideRecordingOverlayImmediately(
+                    reason: "command_asr_start_failed"
+                )
+            }
+        }
+        await self.awaitCaptureStart(captureTask)
+    }
+
+    private func beginRewriteRecording() async {
+        guard self.canBeginDictationRecording() else { return }
+
+        self.captureRecordingContext()
+
+        // Try to capture text first while still in the other app
+        let captured = self.rewriteModeService.captureSelectedText()
+        DebugLogger.shared.info("Rewrite mode triggered, text captured: \(captured)", source: "ContentView")
+
+        if !captured {
+            // No text selected - start in "write mode" where user speaks
+            // what to write
+            DebugLogger.shared
+                .info(
+                    "No text selected - starting in write/improve mode",
+                    source: "ContentView"
+                )
+            self.rewriteModeService.startWithoutSelection()
+            // Set overlay mode to edit
+            self.menuBarManager.setOverlayMode(.edit)
+        } else {
+            // Text was selected - edit mode (with selected context)
+            self.menuBarManager.setOverlayMode(.edit)
+        }
+
+        // Set flag so stopAndProcessTranscription knows to process as rewrite
+        self.setActiveRecordingMode(.edit)
+
+        guard !self.asr.isRunningOrStarting else { return }
+
+        self.advanceOverlayLifecycle()
+
+        // Start recording immediately for the edit instruction
+        DebugLogger.shared.info("Starting voice recording for edit mode", source: "ContentView")
+        let captureOverlayLifecycleID = self.overlayLifecycleID
+        let captureTask = Task {
+            guard !Task.isCancelled else {
+                self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .edit)
+                return
+            }
+            let startOutcome = await self.asr.start(onCaptureStarted: {
+                TranscriptionSoundPlayer.shared.playStartSound()
+                self.appBench("overlay_phase phase=recording trigger=first_pcm mode=edit")
+            })
+            guard !Task.isCancelled else {
+                self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .edit)
+                return
+            }
+            if startOutcome == .failed {
+                self.menuBarManager.hideRecordingOverlayImmediately(
+                    reason: "edit_asr_start_failed"
+                )
+            }
+        }
+        await self.awaitCaptureStart(captureTask)
+    }
+
     private func initializeHotkeyManagerIfNeeded() {
         NotchContentState.shared.onPromptModeSwitchRequested = { mode in
             self.handleLivePromptModeSwitch(mode)
@@ -4956,102 +5064,10 @@ struct ContentView: View {
                 await self.awaitCaptureStart(self.beginDictationRecording(for: selection, mode: .promptMode))
             },
             commandModeCallback: {
-                guard !self.presentExclusiveActivityBlockIfNeeded() else { return }
-                DebugLogger.shared.info("Command mode triggered", source: "ContentView")
-                self.captureRecordingContext()
-
-                // Set flag so stopAndProcessTranscription knows to process as command
-                self.setActiveRecordingMode(.command)
-
-                // Set overlay mode to command
-                self.menuBarManager.setOverlayMode(.command)
-
-                guard !self.asr.isRunningOrStarting else { return }
-
-                self.advanceOverlayLifecycle()
-
-                // Start recording immediately for the command
-                DebugLogger.shared.info(
-                    "Starting voice recording for command",
-                    source: "ContentView"
-                )
-                let captureOverlayLifecycleID = self.overlayLifecycleID
-                let captureTask = Task {
-                    guard !Task.isCancelled else {
-                        self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .command)
-                        return
-                    }
-                    let startOutcome = await self.asr.start(onCaptureStarted: {
-                        TranscriptionSoundPlayer.shared.playStartSound()
-                        self.appBench("overlay_phase phase=recording trigger=first_pcm mode=command")
-                    })
-                    guard !Task.isCancelled else {
-                        self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .command)
-                        return
-                    }
-                    if startOutcome == .failed {
-                        self.menuBarManager.hideRecordingOverlayImmediately(
-                            reason: "command_asr_start_failed"
-                        )
-                    }
-                }
-                await self.awaitCaptureStart(captureTask)
+                await self.beginCommandRecording()
             },
             rewriteModeCallback: {
-                guard !self.presentExclusiveActivityBlockIfNeeded() else { return }
-
-                self.captureRecordingContext()
-
-                // Try to capture text first while still in the other app
-                let captured = self.rewriteModeService.captureSelectedText()
-                DebugLogger.shared.info("Rewrite mode triggered, text captured: \(captured)", source: "ContentView")
-
-                if !captured {
-                    // No text selected - start in "write mode" where user speaks
-                    // what to write
-                    DebugLogger.shared
-                        .info(
-                            "No text selected - starting in write/improve mode",
-                            source: "ContentView"
-                        )
-                    self.rewriteModeService.startWithoutSelection()
-                    // Set overlay mode to edit
-                    self.menuBarManager.setOverlayMode(.edit)
-                } else {
-                    // Text was selected - edit mode (with selected context)
-                    self.menuBarManager.setOverlayMode(.edit)
-                }
-
-                // Set flag so stopAndProcessTranscription knows to process as rewrite
-                self.setActiveRecordingMode(.edit)
-
-                guard !self.asr.isRunningOrStarting else { return }
-
-                self.advanceOverlayLifecycle()
-
-                // Start recording immediately for the edit instruction
-                DebugLogger.shared.info("Starting voice recording for edit mode", source: "ContentView")
-                let captureOverlayLifecycleID = self.overlayLifecycleID
-                let captureTask = Task {
-                    guard !Task.isCancelled else {
-                        self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .edit)
-                        return
-                    }
-                    let startOutcome = await self.asr.start(onCaptureStarted: {
-                        TranscriptionSoundPlayer.shared.playStartSound()
-                        self.appBench("overlay_phase phase=recording trigger=first_pcm mode=edit")
-                    })
-                    guard !Task.isCancelled else {
-                        self.clearCancelledCaptureStart(lifecycleID: captureOverlayLifecycleID, mode: .edit)
-                        return
-                    }
-                    if startOutcome == .failed {
-                        self.menuBarManager.hideRecordingOverlayImmediately(
-                            reason: "edit_asr_start_failed"
-                        )
-                    }
-                }
-                await self.awaitCaptureStart(captureTask)
+                await self.beginRewriteRecording()
             },
             isDictateRecordingProvider: {
                 self.activeRecordingMode == .dictate
@@ -5378,9 +5394,18 @@ extension ContentView {
         self.activeRecordingMode != .none && self.asr.canSwitchOwnedDictationCaptureMode
     }
 
+    private func clearOwnCaptureBlockErrorIfNeeded() {
+        if self.asr.showError, self.asr.errorTitle == "Dictation Unavailable",
+           self.asr.errorMessage == "Wait for the active dictation to finish."
+        { self.asr.showError = false }
+    }
+
     private func canBeginDictationRecording() -> Bool {
         guard !self.isSavingCancelledRecording, self.processingDictationLifecycleID == nil else { return false }
-        if self.canSwitchActiveDictationCaptureMode { return true }
+        if self.canSwitchActiveDictationCaptureMode {
+            self.clearOwnCaptureBlockErrorIfNeeded()
+            return true
+        }
         guard !self.presentExclusiveActivityBlockIfNeeded() else { return false }
         return !self.asr.isRunningOrStarting && !self.asr.isDictionaryTrainingCaptureActive
     }
@@ -5408,9 +5433,6 @@ extension ContentView {
         self.rewriteModeService.clearState()
 
         if switchesOwnedCapture {
-            if self.asr.showError, self.asr.errorTitle == "Dictation Unavailable",
-               self.asr.errorMessage == "Wait for the active dictation to finish."
-            { self.asr.showError = false }
             self.menuBarManager.setOverlayMode(.dictation)
             DebugLogger.shared.info(
                 "Dictation capture mode switched from=\(previousMode.rawValue) to=\(mode.rawValue) slot=\(slot.rawValue)",
