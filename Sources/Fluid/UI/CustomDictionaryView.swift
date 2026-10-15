@@ -16,7 +16,7 @@ import UniformTypeIdentifiers
 // swiftlint:disable:next type_body_length
 struct CustomDictionaryView: View {
     var formattingOnly = false
-    @State private var isWordDrawerPresented = false
+    @State private var isWordDrawerPresented = true
     @State private var wordSearch = ""
     @State private var isDrawerActionsPresented = false
     @State private var drawerDeletion: SettingsStore.CustomDictionaryEntry?
@@ -2454,14 +2454,12 @@ struct CustomDictionaryView: View {
         let filtered = await VoiceTrainingAliasFilter.filter(self.trainingVariants)
         guard self.trainingSaveID == saveID, !Task.isCancelled else { return }
         DebugLogger.shared.info(
-            "VOICE_TRAINING_ALIAS_FILTER accepted=\(filtered.accepted.count) rejected=\(filtered.rejected.count) available=\(filtered.lookupAvailable)",
+            "VOICE_TRAINING_ALIAS_FILTER accepted=\(filtered.accepted.count) rejected=\(filtered.rejected.count)",
             source: "CustomDictionary"
         )
         guard savePronunciation || !filtered.accepted.isEmpty else {
             self.trainingHasError = true
-            self.trainingStatusMessage = filtered.lookupAvailable
-                ? "These recordings contain everyday words. Try again, or add a replacement manually."
-                : "Couldn't check these words. Try saving again, or add a replacement manually."
+            self.trainingStatusMessage = filtered.rejectionMessage
             return
         }
 

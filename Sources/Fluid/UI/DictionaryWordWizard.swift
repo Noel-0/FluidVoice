@@ -258,6 +258,7 @@ struct DictionaryWordWizard: View {
                 DisclosureGroup("Captured spellings · \(self.capturedSpellings.count)", isExpanded: self.$showingCapturedSpellings) {
                     self.capturedVariations.padding(.top, self.theme.metrics.spacing.sm)
                 }
+                .disclosureGroupStyle(FluidDisclosureGroupStyle())
                 .font(self.theme.typography.body)
                 .tint(self.theme.palette.accent)
             }

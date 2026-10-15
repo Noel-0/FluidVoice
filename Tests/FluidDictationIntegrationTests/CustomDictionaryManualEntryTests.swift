@@ -285,8 +285,8 @@ final class CustomDictionaryManualEntryTests: XCTestCase {
         } catch {}
     }
 
-    func testVoiceTrainingKeepsPronunciationWithoutEverydayTextAliases() async {
-        let filtered = await VoiceTrainingAliasFilter.filter(["but", "now", "right now"]) { _ in .checked([]) }
+    func testVoiceTrainingKeepsPronunciationWithoutBasicTextAliases() async {
+        let filtered = await VoiceTrainingAliasFilter.filter(["a", "the", "and"])
         let entries = CustomDictionaryTrainingMerge.mergedEntries(
             current: [], replacement: "Lyft", triggers: filtered.accepted, savePronunciation: true
         )
@@ -298,7 +298,7 @@ final class CustomDictionaryManualEntryTests: XCTestCase {
     func testVoiceTrainingFilterPreservesExistingManualRules() async {
         let manual = SettingsStore.CustomDictionaryEntry(triggers: ["now"], replacement: "Lyft")
         let unrelated = SettingsStore.CustomDictionaryEntry(triggers: ["but"], replacement: "ManualChoice")
-        let filtered = await VoiceTrainingAliasFilter.filter(["now", "hello"]) { _ in .checked([]) }
+        let filtered = await VoiceTrainingAliasFilter.filter(["an", "the"])
         let entries = CustomDictionaryTrainingMerge.mergedEntries(
             current: [manual, unrelated], replacement: "Lyft", triggers: filtered.accepted, savePronunciation: true
         )
@@ -306,12 +306,21 @@ final class CustomDictionaryManualEntryTests: XCTestCase {
         XCTAssertEqual(CustomDictionaryManualEntry.normalizedTriggers(["but", "now", "right now"]), ["but", "now", "right now"])
     }
 
-    func testUnavailableVocabularyCannotCreateTextOnlyTrainingRules() async {
-        let filtered = await VoiceTrainingAliasFilter.filter(["now"]) { _ in .unavailable }
+    func testBasicWordsCannotCreateTextOnlyTrainingRules() async {
+        let filtered = await VoiceTrainingAliasFilter.filter(["the"])
         let entries = CustomDictionaryTrainingMerge.mergedEntries(
             current: [], replacement: "Lyft", triggers: filtered.accepted
         )
         XCTAssertTrue(entries.isEmpty)
+    }
+
+    func testVoiceTrainingCanSaveCorrectlySpelledWordsAndPhrasesWithoutPronunciation() async {
+        let filtered = await VoiceTrainingAliasFilter.filter(["hello", "right now", "fluid voice"])
+        let entries = CustomDictionaryTrainingMerge.mergedEntries(
+            current: [], replacement: "FluidVoice", triggers: filtered.accepted
+        )
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(Set(entries.first?.triggers ?? []), Set(["hello", "right now", "fluid voice"]))
     }
 
     func testKeepsWhitespaceOnlyReplacements() {

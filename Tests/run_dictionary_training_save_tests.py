@@ -42,10 +42,8 @@ struct VoiceTrainingAliasFilter {
     struct Result {
         let accepted: [String]
         let rejected: [String] = []
-        let lookupAvailable: Bool
-        init(accepted: [String], lookupAvailable: Bool = true) {
-            self.accepted = accepted; self.lookupAvailable = lookupAvailable
-        }
+        var rejectionMessage: String { "Replacement found these words: “the”. These single words are too broad to replace automatically. Add a manual replacement if intended." }
+        init(accepted: [String]) { self.accepted = accepted }
     }
     static var response: Result?
     static func filter(_ values: [String]) async -> Result { response ?? Result(accepted: values) }
@@ -242,18 +240,18 @@ func check(_ condition: @autoclosure () -> Bool, _ message: String) {
             passes += 1
         }
         // Filtering cannot create a text rule when no safe aliases and no ready voice exist.
-        for available in [true, false] {
+        do {
             let original = baseline()
             let view = reset(original)
             view.trainingPronunciationEnrollments = []
-            VoiceTrainingAliasFilter.response = .init(accepted: [], lookupAvailable: available)
+            VoiceTrainingAliasFilter.response = .init(accepted: [])
             await PronunciationDictionaryStore.shared.configure(gate: nil)
             await view.addTrainedReplacement()
             let calls = await PronunciationDictionaryStore.shared.calls
             check(view.writes == 0 && calls == 0, "Rejected aliases must not write text rules or profiles")
             check(SettingsStore.shared.customDictionaryEntries == original, "Rejected aliases preserve the dictionary")
-            check(view.trainingHasError && view.wizardStep == .recording, "Rejected or unavailable aliases leave a visible retry")
-            check(view.trainingStatusMessage.contains(available ? "everyday words" : "Couldn't check"), "Alias failure explains its actual cause")
+            check(view.trainingHasError && view.wizardStep == .recording, "Rejected aliases leave a visible manual fallback")
+            check(view.trainingStatusMessage.contains("manual replacement"), "Alias failure explains its actual cause")
             check(!view.trainingVariants.isEmpty && !view.isTrainingProcessing && view.trainingSaveID == nil, "Alias failure retains recordings and releases busy state")
             passes += 1
         }
