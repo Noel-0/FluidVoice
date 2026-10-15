@@ -2132,7 +2132,7 @@ struct ContentView: View {
     private var hasPageToolbarActions: Bool {
         guard !self.settingsNavigation.isPresented else { return false }
         return switch self.selectedSidebarItem ?? .welcome {
-        case .stats, .commandMode, .meetingTranscription, .customDictionary, .changelog: true
+        case .stats, .commandMode, .customDictionary, .changelog: true
         default: false
         }
     }

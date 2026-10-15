@@ -205,8 +205,20 @@ struct MeetingTranscriptionView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            GeometryReader { geometry in
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                MeetingTranscriptionHeader(
+                    state: self.canvasState,
+                    isMeetingHistoryVisible: self.isMeetingHistoryVisible,
+                    isSummaryRunning: self.summaryActivity.selectionLock != nil,
+                    onNewMeeting: { self.startNewMeeting(hideHistory: geometry.size.width < 900) },
+                    onOpenMeetingSettings: self.openMeetingSettings,
+                    onToggleMeetingHistory: self.toggleMeetingHistory
+                )
+                .padding(.horizontal, FluidPageLayout.inset)
+                .padding(.vertical, 12)
+                Divider()
+
                 ZStack(alignment: .trailing) {
                     MeetingTranscriptionCanvas(
                         setupDraft: self.$setupDraft,
@@ -293,23 +305,6 @@ struct MeetingTranscriptionView: View {
             }
         }
         .background(self.theme.palette.contentBackground)
-        .fluidPageActions {
-            MeetingTranscriptionHeader(
-                state: self.canvasState,
-                isMeetingHistoryVisible: self.isMeetingHistoryVisible,
-                onNewMeeting: self.startNewMeeting,
-                onOpenMeetingSettings: self.openMeetingSettings,
-                onToggleMeetingHistory: {
-                    let willShowHistory = !self.isMeetingHistoryVisible
-                    withAnimation(self.accessibilityReduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        self.isMeetingHistoryVisible.toggle()
-                    }
-                    if willShowHistory, self.historySnapshot.sessions.isEmpty {
-                        Task { await self.loadMeetingHistory() }
-                    }
-                }
-            )
-        }
         .clipped()
         .task {
             MeetingDiarizationModelStore.shared.prepareInBackground()
@@ -1112,11 +1107,22 @@ struct MeetingTranscriptionView: View {
         return candidate
     }
 
-    private func startNewMeeting() {
+    private func toggleMeetingHistory() {
+        let willShowHistory = !self.isMeetingHistoryVisible
+        withAnimation(self.accessibilityReduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            self.isMeetingHistoryVisible.toggle()
+        }
+        if willShowHistory, self.historySnapshot.sessions.isEmpty {
+            Task { await self.loadMeetingHistory() }
+        }
+    }
+
+    private func startNewMeeting(hideHistory: Bool = false) {
         guard self.summaryActivity.selectionLock == nil else { return }
         do {
             try self.coordinator.resetForNewMeeting()
             self.selectedHistorySessionID = nil
+            if hideHistory { self.isMeetingHistoryVisible = false }
             self.setupDraft.usesAutomaticApplication = true
             self.selectPreferredApplication(from: self.applications.map(\.identity))
             self.resetDraftTitleToDefault()
@@ -1514,59 +1520,70 @@ struct MeetingTranscriptionCanvas: View {
     }
 }
 
+struct MeetingPageActionAvailability: Equatable {
+    let showsNewMeeting: Bool
+    let canStartNewMeeting: Bool
+    let canEditSetup: Bool
+
+    init(state: MeetingTranscriptionCanvasState, isSummaryRunning: Bool) {
+        switch state {
+        case .result, .failed:
+            self.showsNewMeeting = true
+            self.canEditSetup = true
+        case let .setup(isStarting, _):
+            self.showsNewMeeting = false
+            self.canEditSetup = !isStarting
+        case .recording, .stopping, .processing:
+            self.showsNewMeeting = false
+            self.canEditSetup = false
+        }
+        self.canStartNewMeeting = self.showsNewMeeting && !isSummaryRunning
+    }
+}
+
 private struct MeetingTranscriptionHeader: View {
     let state: MeetingTranscriptionCanvasState
     let isMeetingHistoryVisible: Bool
+    let isSummaryRunning: Bool
     let onNewMeeting: () -> Void
     let onOpenMeetingSettings: () -> Void
     let onToggleMeetingHistory: () -> Void
+    @Environment(\.fluidPageToolbarVisible) private var isPageVisible
 
     var body: some View {
-        Group {
-            if self.canStartNewMeeting {
+        let availability = MeetingPageActionAvailability(state: self.state, isSummaryRunning: self.isSummaryRunning)
+        FluidGlassControlGroup {
+            HStack(spacing: 12) {
+                if availability.showsNewMeeting {
+                    Button(action: self.onNewMeeting) {
+                        Label("New Meeting", systemImage: "plus")
+                    }
+                    .fluidGlassAction()
+                    .disabled(!availability.canStartNewMeeting)
+                    .keyboardShortcut("n", modifiers: .command)
+                    .help(self.isSummaryRunning ? "Finish or cancel the summary before starting a new meeting" : "Return to recording setup")
+                    .accessibilityHint("Return to recording setup; the current meeting stays saved")
+                }
+                Spacer(minLength: 8)
                 MeetingHeaderIconButton(
-                    systemImage: "plus",
-                    label: "New Meeting",
-                    action: self.onNewMeeting
+                    systemImage: "gearshape",
+                    label: "FluidMeet settings",
+                    action: self.onOpenMeetingSettings
                 )
-                .keyboardShortcut("n", modifiers: .command)
-                .accessibilityHint("Clear the current meeting and return to recording setup")
+                .disabled(!availability.canEditSetup)
+                .accessibilityHint("Change the saved recording application, microphone, and meeting defaults")
+
+                MeetingHeaderIconButton(
+                    systemImage: self.isMeetingHistoryVisible
+                        ? "rectangle.righthalf.inset.filled"
+                        : "sidebar.right",
+                    label: self.isMeetingHistoryVisible ? "Hide meeting history" : "Show meeting history",
+                    isSelected: self.isMeetingHistoryVisible,
+                    action: self.onToggleMeetingHistory
+                )
             }
-
-            MeetingHeaderIconButton(
-                systemImage: "gearshape",
-                label: "FluidMeet settings",
-                action: self.onOpenMeetingSettings
-            )
-            .disabled(!self.canEditSetup)
-            .accessibilityHint("Change the saved recording application, microphone, and meeting defaults")
-
-            MeetingHeaderIconButton(
-                systemImage: self.isMeetingHistoryVisible
-                    ? "rectangle.righthalf.inset.filled"
-                    : "sidebar.right",
-                label: self.isMeetingHistoryVisible ? "Hide meeting history" : "Show meeting history",
-                isSelected: self.isMeetingHistoryVisible,
-                action: self.onToggleMeetingHistory
-            )
         }
-    }
-
-    private var canStartNewMeeting: Bool {
-        switch self.state {
-        case .result, .failed:
-            return true
-        case .setup, .recording, .stopping, .processing:
-            return false
-        }
-    }
-
-    private var canEditSetup: Bool {
-        switch self.state {
-        case let .setup(isStarting, _): !isStarting
-        case .result, .failed: true
-        case .recording, .stopping, .processing: false
-        }
+        .disabled(!self.isPageVisible)
     }
 }
 
@@ -1582,7 +1599,8 @@ private struct MeetingHeaderIconButton: View {
             Label(self.label, systemImage: self.systemImage)
                 .foregroundStyle(self.isSelected ? self.theme.palette.accent : self.theme.palette.primaryText)
         }
-        .buttonStyle(.automatic)
+        .labelStyle(.iconOnly)
+        .fluidGlassAction(circular: true)
         .help(self.label)
         .accessibilityLabel(self.label)
         .accessibilityAddTraits(self.isSelected ? .isSelected : [])

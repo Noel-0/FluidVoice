@@ -627,3 +627,41 @@ extension MeetingMenuBarStartTests {
         XCTAssertNil(manager.requestedNavigationDestination)
     }
 }
+
+@MainActor
+final class MeetingPageActionAvailabilityTests: XCTestCase {
+    private func session() -> MeetingSession {
+        MeetingSession(
+            configuration: MeetingCaptureConfiguration(mode: .inRoom, title: "Meeting", microphone: MeetingMicrophoneIdentity(captureDeviceID: "mic", displayName: "Mic")),
+            timebase: MeetingTimebaseMetadata(startedHostTime: 0, machTimebaseNumerator: 1, machTimebaseDenominator: 1, firstPresentationTime: nil)
+        )
+    }
+
+    func testCompletedAndFailedMeetingsKeepNewMeetingVisibleWhileSummaryBlocksItsAction() {
+        for state in [MeetingTranscriptionCanvasState.result(self.session()), .failed(session: nil, message: "Failed")] {
+            for summaryRunning in [false, true] {
+                let actions = MeetingPageActionAvailability(state: state, isSummaryRunning: summaryRunning)
+                XCTAssertTrue(actions.showsNewMeeting)
+                XCTAssertEqual(actions.canStartNewMeeting, !summaryRunning)
+                XCTAssertTrue(actions.canEditSetup)
+            }
+        }
+    }
+
+    func testSetupAndActiveCaptureNeverOfferAnotherMeeting() {
+        let session = self.session()
+        let states: [MeetingTranscriptionCanvasState] = [
+            .setup(isStarting: false, recentSession: nil),
+            .setup(isStarting: true, recentSession: session),
+            .recording(session: session, trackHealth: [:], liveTranscript: .empty),
+            .stopping(session: session, trackHealth: [:], liveTranscript: .empty),
+            .processing(session: session, stage: .transcribing),
+        ]
+        for (index, state) in states.enumerated() {
+            let actions = MeetingPageActionAvailability(state: state, isSummaryRunning: false)
+            XCTAssertFalse(actions.showsNewMeeting)
+            XCTAssertFalse(actions.canStartNewMeeting)
+            XCTAssertEqual(actions.canEditSetup, index == 0)
+        }
+    }
+}
