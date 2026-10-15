@@ -567,6 +567,7 @@ nonisolated enum MeetingDirectAEC3Availability {
 private final nonisolated class ScreenCaptureMeetingRuntime: NSObject, MeetingCaptureRuntime, SCStreamOutput, SCStreamDelegate,
     @unchecked Sendable
 {
+    private let microphonePCMNormalizer = MeetingMicrophonePCMNormalizer()
     /// HAL notifications can arrive while the default input/output pair is still converging.
     /// Admission stays closed until the latest route revision has settled.
     private static let rawRouteSettleSeconds: Double = 0.75
@@ -1015,6 +1016,7 @@ private final nonisolated class ScreenCaptureMeetingRuntime: NSObject, MeetingCa
             #if DEBUG
             self.recordPairedDiagnostic(sampleBuffer, output: .microphone)
             #endif
+            let sampleBuffer = self.microphonePCMNormalizer.normalize(sampleBuffer)
             switch aecState {
             case .active:
                 pipeline?.consumeCapture(sampleBuffer, stream: streamToken)
@@ -1904,6 +1906,7 @@ private final nonisolated class ScreenCaptureRuntimeDelegateProxy: NSObject, SCS
 private final nonisolated class InRoomMicrophoneCaptureRuntime: NSObject, MeetingCaptureRuntime,
     AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable
 {
+    private let microphonePCMNormalizer = MeetingMicrophonePCMNormalizer()
     var captureScope: MeetingCaptureScope? { nil }
 
     private let session = AVCaptureSession()
@@ -1997,6 +2000,7 @@ private final nonisolated class InRoomMicrophoneCaptureRuntime: NSObject, Meetin
         let shouldAccept = !self.stopping
         self.stateLock.unlock()
         guard shouldAccept else { return }
+        let sampleBuffer = self.microphonePCMNormalizer.normalize(sampleBuffer)
         self.writer.enqueue(sampleBuffer)
         self.liveAudioHandler?(.microphone, sampleBuffer)
     }
@@ -2122,6 +2126,7 @@ final nonisolated class MeetingSerializedCaptureLifecycle: @unchecked Sendable {
 final nonisolated class MeetingAVCaptureMicrophoneComponent: NSObject,
     AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable
 {
+    private let microphonePCMNormalizer = MeetingMicrophonePCMNormalizer()
     private static let interruptionEndedWaitSeconds: Double = 3
 
     let deviceUID: String?
@@ -2268,7 +2273,7 @@ final nonisolated class MeetingAVCaptureMicrophoneComponent: NSObject,
         if shouldAccept { self.deliveredSampleCount &+= 1 }
         self.stateLock.unlock()
         guard shouldAccept else { return }
-        self.onSample(sampleBuffer)
+        self.onSample(self.microphonePCMNormalizer.normalize(sampleBuffer))
     }
 
     func sampleCount() -> UInt64 {
