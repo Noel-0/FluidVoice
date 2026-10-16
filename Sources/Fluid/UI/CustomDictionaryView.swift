@@ -188,7 +188,6 @@ struct CustomDictionaryView: View {
 
     private var canAddTrainedReplacement: Bool {
         !self.normalizedTrainingReplacement.isEmpty &&
-            (!self.trainingVariants.isEmpty || self.trainingProgress.pronunciationReady) &&
             !self.isTrainingRecording &&
             !self.isTrainingProcessing &&
             self.trainingFinalOutputIsReady
@@ -621,13 +620,7 @@ struct CustomDictionaryView: View {
                         Task { await self.toggleAutomaticTraining() }
                     },
                     onSave: {
-                        if self.trainingAlreadyCorrectWithoutReplacement {
-                            self.wizardSavedWord = self.normalizedTrainingReplacement
-                            self.resetTraining()
-                            self.wizardStep = .saved
-                        } else {
-                            Task { await self.addTrainedReplacement() }
-                        }
+                        Task { await self.addTrainedReplacement() }
                     },
                     onBack: { self.wizardStep = .spelling },
                     onNewWord: { self.resetTraining(); self.wizardStep = .spelling },
@@ -2437,7 +2430,7 @@ struct CustomDictionaryView: View {
     }
 
     private func addTrainedReplacement() async {
-        guard self.canAddTrainedReplacement else { return }
+        guard self.canAddTrainedReplacement, !Task.isCancelled else { return }
         self.isTrainingProcessing = true
         let saveID = UUID()
         self.trainingSaveID = saveID
@@ -2451,27 +2444,21 @@ struct CustomDictionaryView: View {
         let enrollments = self.trainingPronunciationEnrollments
         let savePronunciation = self.trainingProgress.pronunciationReady
         let pronunciationGeneration = DictionaryMatcherExperiment.generation
-        let filtered = await VoiceTrainingAliasFilter.filter(self.trainingVariants)
-        guard self.trainingSaveID == saveID, !Task.isCancelled else { return }
-        DebugLogger.shared.info(
-            "VOICE_TRAINING_ALIAS_FILTER accepted=\(filtered.accepted.count) rejected=\(filtered.rejected.count) available=\(filtered.lookupAvailable)",
-            source: "CustomDictionary"
-        )
-        guard savePronunciation || !filtered.accepted.isEmpty else {
-            self.trainingHasError = true
-            self.trainingStatusMessage = filtered.lookupAvailable
-                ? "These recordings contain everyday words. Try again, or add a replacement manually."
-                : "Couldn't check these words. Try saving again, or add a replacement manually."
-            return
-        }
-
         let originalEntries = SettingsStore.shared.customDictionaryEntries
+        // Valid words can still be misheard names (for example, "super base").
+        // Explicit training saves the captured spellings without a spellchecker veto.
         let updatedEntries = CustomDictionaryTrainingMerge.mergedEntries(
             current: originalEntries,
             replacement: replacementText,
-            triggers: filtered.accepted,
+            triggers: self.trainingVariants,
             savePronunciation: savePronunciation
         )
+        guard savePronunciation || updatedEntries != originalEntries else {
+            self.trainingHasError = true
+            self.trainingStatusMessage = "These spellings are already covered. Nothing new was saved. Record another example or add a correction manually."
+            DebugLogger.shared.info("VOICE_TRAINING_SAVE outcome=unchanged", source: "CustomDictionary")
+            return
+        }
         let entry = updatedEntries.first {
             $0.replacement.caseInsensitiveCompare(replacementText) == .orderedSame
         }
@@ -2512,6 +2499,10 @@ struct CustomDictionaryView: View {
         }
         self.entries = updatedEntries
         self.saveEntries()
+        DebugLogger.shared.info(
+            "VOICE_TRAINING_SAVE outcome=saved textChanged=\(updatedEntries != originalEntries) pronunciationSamples=\(savePronunciation ? enrollments.count : 0)",
+            source: "CustomDictionary"
+        )
         self.wizardSavedWord = replacementText
         self.resetTraining()
         self.wizardStep = .saved
