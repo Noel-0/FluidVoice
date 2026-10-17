@@ -250,7 +250,7 @@ final class NotchOverlayManager {
         }
         newNotch.transitionConfiguration = .init(
             openingAnimation: .snappy(duration: 0.1),
-            closingAnimation: .linear(duration: 0.02),
+            closingAnimation: .snappy(duration: 0.1),
             conversionAnimation: .snappy(duration: 0.1),
             skipIntermediateHides: true
         )
@@ -450,6 +450,22 @@ final class NotchOverlayManager {
 
         self.state = .hiding
         Self.overlayBench("hide_visual_start")
+
+        // Animate while the panel is still on screen. A new presentation
+        // during the animation bumps the generation and retires this notch
+        // itself, so only retire it here if this hide is still current.
+        if let notch = self.notch {
+            self.notchAnimationTask?.cancel()
+            self.notchAnimationTask = nil
+            self.notchPresentationTask?.cancel()
+            self.notchPresentationTask = nil
+            await notch.hide()
+            guard self.generation == currentGeneration, self.notch === notch else {
+                Self.overlayBench("hide_return reason=superseded_during_animation")
+                return .superseded
+            }
+        }
+
         self.retireCurrentNotchImmediately(reason: "hide")
         Self.overlayBench("hide_visual_complete elapsedMs=\(Self.elapsedMs(since: startedAt))")
         return .hidden
