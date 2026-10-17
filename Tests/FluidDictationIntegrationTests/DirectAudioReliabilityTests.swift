@@ -1012,6 +1012,24 @@ final class DirectAudioReliabilityTests: XCTestCase {
         XCTAssertTrue(command.contains("guard isOutputValid() else {\n            self.commandModeService.cancelInvalidPendingCommand()"))
     }
 
+    func testExpandedCommandOutputDoesNotReplaceSupersedingRecording() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let overlay = try String(
+            contentsOf: root.appendingPathComponent("Sources/Fluid/Services/NotchOverlayManager.swift"),
+            encoding: .utf8
+        )
+        let expansion = try XCTUnwrap(
+            overlay.components(separatedBy: "func showExpandedCommandOutput() {").last?
+                .components(separatedBy: "private func showExpandedCommandOutputInternal()").first
+        )
+
+        XCTAssertTrue(expansion.contains("guard await self.hideAndWait() == .hidden else { return }"))
+        XCTAssertTrue(expansion.contains("let recordingGeneration = self.generation"))
+        XCTAssertTrue(
+            expansion.contains("guard self.generation == recordingGeneration, self.notch == nil else { return }")
+        )
+    }
+
     func testCancelledProcessingCannotPublishDelayedOverlayOrPracticeResult() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent("Sources/Fluid/ContentView.swift"), encoding: .utf8)

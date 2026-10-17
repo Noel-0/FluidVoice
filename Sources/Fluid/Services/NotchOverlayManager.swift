@@ -599,11 +599,13 @@ final class NotchOverlayManager {
             // Hide regular notch first if visible. The closing animation can
             // outlast the cleanup delay, so wait for it before presenting.
             if self.notch != nil {
-                _ = await self.hideAndWait()
+                guard await self.hideAndWait() == .hidden else { return }
             }
 
+            let recordingGeneration = self.generation
             // Wait a bit for cleanup
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            guard self.generation == recordingGeneration, self.notch == nil else { return }
             await self.showExpandedCommandOutputInternal()
         }
     }
