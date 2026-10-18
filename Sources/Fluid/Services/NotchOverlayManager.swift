@@ -86,6 +86,7 @@ final class NotchOverlayManager {
     // Generation counter to track show/hide cycles and prevent race conditions
     // Uses UInt64 to avoid overflow concerns in long-running sessions
     private var generation: UInt64 = 0
+    private var recordingPresentationGeneration: UInt64 = 0
     private var commandOutputGeneration: UInt64 = 0
     private var isHideInProgress = false
     private var activeHideGeneration: UInt64?
@@ -149,6 +150,7 @@ final class NotchOverlayManager {
     }
 
     func show(audioLevelPublisher: AnyPublisher<CGFloat, Never>, mode: OverlayMode) {
+        self.recordingPresentationGeneration &+= 1
         self.refreshNotchPresentationPolicy()
         Self.overlayBench("show_called mode=\(mode.rawValue) state=\(self.state) commandExpanded=\(self.isCommandOutputExpanded)")
         self.cancelInFlightHideForNewPresentation()
@@ -602,10 +604,10 @@ final class NotchOverlayManager {
                 guard await self.hideAndWait() == .hidden else { return }
             }
 
-            let recordingGeneration = self.generation
+            let recordingGeneration = self.recordingPresentationGeneration
             // Wait a bit for cleanup
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            guard self.generation == recordingGeneration, self.notch == nil else { return }
+            guard self.recordingPresentationGeneration == recordingGeneration, self.notch == nil else { return }
             await self.showExpandedCommandOutputInternal()
         }
     }
