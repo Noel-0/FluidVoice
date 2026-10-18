@@ -1033,8 +1033,18 @@ final class DirectAudioReliabilityTests: XCTestCase {
 
         XCTAssertTrue(show.contains("self.recordingPresentationGeneration &+= 1"))
         XCTAssertFalse(immediateHide.contains("recordingPresentationGeneration"))
+        let capture = try XCTUnwrap(
+            expansion.range(of: "let recordingGeneration = self.recordingPresentationGeneration")
+        )
+        let taskStart = try XCTUnwrap(expansion.range(of: "Task { [weak self] in"))
+        XCTAssertLessThan(capture.lowerBound, taskStart.lowerBound)
+        XCTAssertEqual(
+            expansion.components(
+                separatedBy: "guard self.recordingPresentationGeneration == recordingGeneration else { return }"
+            ).count - 1,
+            2
+        )
         XCTAssertTrue(expansion.contains("guard await self.hideAndWait() == .hidden else { return }"))
-        XCTAssertTrue(expansion.contains("let recordingGeneration = self.recordingPresentationGeneration"))
         XCTAssertTrue(
             expansion.contains(
                 "guard self.recordingPresentationGeneration == recordingGeneration, self.notch == nil else { return }"

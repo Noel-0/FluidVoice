@@ -596,15 +596,17 @@ final class NotchOverlayManager {
     func showExpandedCommandOutput() {
         guard self.canShowExpandedCommandOutput else { return }
 
+        let recordingGeneration = self.recordingPresentationGeneration
         Task { [weak self] in
             guard let self else { return }
+            guard self.recordingPresentationGeneration == recordingGeneration else { return }
             // Hide regular notch first if visible. The closing animation can
             // outlast the cleanup delay, so wait for it before presenting.
             if self.notch != nil {
                 guard await self.hideAndWait() == .hidden else { return }
+                guard self.recordingPresentationGeneration == recordingGeneration else { return }
             }
 
-            let recordingGeneration = self.recordingPresentationGeneration
             // Wait a bit for cleanup
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
             guard self.recordingPresentationGeneration == recordingGeneration, self.notch == nil else { return }
